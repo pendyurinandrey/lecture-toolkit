@@ -7,14 +7,34 @@
 
 1. **fork-join** — вырезать нужные фрагменты из исходных видео (Zoom-записей и
    т.п.), склеить их в одну лекцию и извлечь звуковую дорожку в MP3.
-2. **speech-to-text** — распознать эту дорожку в текст, восстановить
-   пунктуацию и убрать слова-паразиты.
+2. **speech-to-text-whisper** или **speech-to-text-gigaam** — распознать эту
+   дорожку в текст (два независимых движка на выбор, см. ниже) и получить
+   читаемый текст с пунктуацией, без слов-паразитов.
+
+## Какой движок распознавания речи выбрать
+
+| | speech-to-text-whisper | speech-to-text-gigaam |
+|---|---|---|
+| Движок | faster-whisper (large-v3) | GigaAM-v3 (Сбер) |
+| Точность на русском | Хорошая | Заметно лучше на именах/терминах — см. сравнение в истории разработки |
+| Пунктуация | Отдельный шаг, модель `kontur-ai/sbert_punc_case_ru` | Встроена в саму ASR-модель |
+| Скорость (2.5-3ч лекция, M1 Pro, CPU) | ~80-95 мин | ~50-90 мин, зависит от длины кусков |
+| Внешние аккаунты | Не нужны | Нужен бесплатный аккаунт Hugging Face + токен (см. модуль) |
+| Статус | Основной, обкатанный пайплайн | Более новый, показал себя как минимум не хуже в прямом сравнении |
+
+Модули независимы и **используют разные, несовместимые версии `torch`**
+(GigaAM тянет за собой более старый `torch` из-за зависимости от pyannote) —
+поэтому у каждого своя отдельная виртуальная среда, объединить их в один
+venv не получится.
 
 ## Требования
 
 - Python 3
-- [ffmpeg](https://ffmpeg.org/) в `PATH` (`brew install ffmpeg`) — нужен обоим модулям
-- Для `speech-to-text` дополнительно нужны Python-пакеты из `requirements.txt`
+- [ffmpeg](https://ffmpeg.org/) в `PATH` (`brew install ffmpeg`) — нужен всем модулям
+- `fork-join` использует только стандартную библиотеку (`fork_join_ui.py` —
+  ещё и `tkinter`, входит в стандартную поставку Python), отдельных
+  зависимостей не требует.
+- Для `speech-to-text-whisper` нужны Python-пакеты из `requirements.txt`
   в корне репозитория:
 
   ```bash
@@ -23,9 +43,8 @@
   pip install -r requirements.txt
   ```
 
-  `fork-join` использует только стандартную библиотеку (`fork_join_ui.py` —
-  ещё и `tkinter`, входит в стандартную поставку Python), отдельных
-  зависимостей не требует.
+- Для `speech-to-text-gigaam` — отдельная среда и свои зависимости, см. раздел
+  модуля ниже (`speech-to-text-gigaam/requirements.txt`).
 
 ## fork-join
 
@@ -94,7 +113,7 @@ python3 fork-join/fork_join_ui.py
 - `output.videoPath` — полный путь к выходному видео файлу в формате MP4
 - `output.audioPath` — полный путь к выходному аудио файлу в формате MP3
 
-## speech-to-text
+## speech-to-text-whisper
 
 Локальная транскрибация лекции в текст: распознавание речи (`faster-whisper`,
 CPU, beam search + VAD) и последующее восстановление пунктуации/регистра
@@ -107,7 +126,7 @@ CPU, beam search + VAD) и последующее восстановление �
 ### 1. Распознавание речи
 
 ```bash
-python3 speech-to-text/transcribe.py lecture.mp3 --save-json
+python3 speech-to-text-whisper/transcribe.py lecture.mp3 --save-json
 ```
 
 Создаёт `lecture.txt` (черновой текст с таймкодами) и `lecture.json` (сырые
@@ -128,7 +147,7 @@ python3 speech-to-text/transcribe.py lecture.mp3 --save-json
 ### 2. Восстановление пунктуации
 
 ```bash
-python3 speech-to-text/restore_punctuation.py lecture.json
+python3 speech-to-text-whisper/restore_punctuation.py lecture.json
 ```
 
 Создаёт `lecture_punctuated.txt` — читаемый текст с восстановленной
@@ -148,3 +167,67 @@ python3 speech-to-text/restore_punctuation.py lecture.json
 пропустила или подменила слово, сохранив при этом гладкую, правдоподобную
 фразу. Для таких мест пока нет автоматической проверки — при сомнении в
 конкретной фразе стоит сверить её с оригинальным аудио.
+
+## speech-to-text-gigaam
+
+Локальная транскрибация через [GigaAM-v3](https://github.com/salute-developers/GigaAM)
+(`v3_e2e_rnnt`) — модель уже сама расставляет пунктуацию и регистр, отдельный
+шаг восстановления пунктуации не нужен.
+
+### Установка (отдельная от корневого `requirements.txt`)
+
+```bash
+cd speech-to-text-gigaam
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
+```
+
+Дополнительно нужны:
+
+- **Аккаунт Hugging Face + токен** (бесплатно) — GigaAM использует VAD-модель
+  `pyannote/segmentation-3.0` для нарезки длинного аудио, а она gated:
+  1. Зарегистрироваться на [huggingface.co](https://huggingface.co/join)
+  2. Принять условия на странице [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
+  3. Создать токен с правами **Read** в [настройках](https://huggingface.co/settings/tokens)
+  4. `export HF_TOKEN="..."` в терминале перед запуском
+- **ffmpeg версии 4-8** рядом с основным ffmpeg — библиотека `torchcodec`
+  (через которую pyannote читает аудио) пока не поддерживает FFmpeg 9+:
+  ```bash
+  brew install ffmpeg@8
+  ```
+  (keg-only, не подменяет основной `ffmpeg` в PATH)
+
+### Использование
+
+```bash
+export HF_TOKEN="..."
+DYLD_FALLBACK_LIBRARY_PATH="/opt/homebrew/opt/ffmpeg@8/lib" \
+    ./venv/bin/python transcribe_longform_chunked.py lecture.mp3 --output lecture.gigaam.txt
+```
+
+Скрипт сам:
+1. находит паузы в речи через `ffmpeg silencedetect` (лёгкий, не ML) и режет
+   аудио на куски ~30 минут строго по этим паузам — никогда не разрезает
+   слово посередине;
+2. обрабатывает каждый кусок **отдельным процессом** — GigaAM/pyannote на
+   многочасовых файлах непредсказуемо наращивают потребление памяти вплоть
+   до исчерпания swap, разбивка на куски с независимыми процессами это
+   обходит;
+3. убирает слова-паразиты (аналогично `speech-to-text-whisper`, но с учётом
+   того, что слова уже несут пунктуацию — при удалении паразита его знаки
+   препинания не теряются, а переносятся на соседние слова);
+4. перегруппировывает результат в абзацы строго по границе предложения
+   (`.`, `?` или `!`) и склеивает всё в один файл с таймкодами.
+
+Основные флаги:
+
+| Флаг | По умолчанию | Назначение |
+|---|---|---|
+| `--chunk-minutes` | `30` | Целевая длина куска в минутах |
+| `--keep-fillers` | паразиты удаляются | Не удалять слова-паразиты |
+| `--output` | `<audio>.gigaam.txt` | Путь к итоговому файлу |
+
+Есть также `transcribe_longform.py` — обрабатывает файл целиком одним
+процессом (без нарезки и без удаления паразитов), используется внутри
+`transcribe_longform_chunked.py` как воркер на один кусок; для файлов
+короче ~40-60 минут можно использовать напрямую.

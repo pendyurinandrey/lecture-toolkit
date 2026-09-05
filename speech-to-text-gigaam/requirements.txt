@@ -1,0 +1,5 @@
+# Отдельная среда от корневого requirements.txt (speech-to-text-whisper) —
+# GigaAM[longform] тянет за собой более старый torch (через pyannote.audio),
+# несовместимый с версией, нужной faster-whisper.
+gigaam[torch,longform] @ git+https://github.com/salute-developers/GigaAM.git
+certifi
