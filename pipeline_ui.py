@@ -14,7 +14,6 @@ fork-join (обязательный шаг) + speech-to-text через GigaAM-v
 """
 
 import os
-import sys
 import threading
 import time
 import tkinter as tk
@@ -22,14 +21,14 @@ from contextlib import nullcontext
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT / "fork-join"))
-sys.path.insert(0, str(ROOT / "speech-to-text-gigaam"))
-
-import fork_join  # noqa: E402
-import fork_join_ui  # noqa: E402
-import transcribe_longform_chunked  # noqa: E402
-from transcribe_longform import EnvironmentCheckError, check_ffmpeg_compatibility, ensure_hf_token  # noqa: E402
+from fork_join import fork_join
+from fork_join import fork_join_ui
+from speech_to_text_gigaam import transcribe_longform_chunked
+from speech_to_text_gigaam.transcribe_longform import (
+    EnvironmentCheckError,
+    check_ffmpeg_compatibility,
+    ensure_hf_token,
+)
 
 TEXT_FILETYPES = [("Текстовый файл", "*.txt")]
 

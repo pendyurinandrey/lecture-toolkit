@@ -31,10 +31,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
-from filler_words import remove_fillers  # noqa: E402
-
-from transcribe_longform import (
+from common.filler_words import remove_fillers
+from speech_to_text_gigaam.transcribe_longform import (
     EnvironmentCheckError,
     check_ffmpeg_compatibility,
     ensure_hf_token,
@@ -123,7 +121,6 @@ def run(audio_path, output_path=None, chunk_minutes: float = CHUNK_TARGET_SEC / 
     for i in range(len(boundaries) - 1):
         log(f"  {i + 1}: {format_timestamp(boundaries[i])} - {format_timestamp(boundaries[i + 1])}")
 
-    script_dir = Path(__file__).parent
     all_word_ts = []
 
     with tempfile.TemporaryDirectory(prefix="gigaam_chunks_") as tmp_dir:
@@ -144,8 +141,10 @@ def run(audio_path, output_path=None, chunk_minutes: float = CHUNK_TARGET_SEC / 
 
             # Отдельный процесс на кусок — память освобождается полностью
             # при его завершении, независимо от причины роста внутри GigaAM.
+            # Запускается как модуль (-m), а не по пути к файлу — так работает
+            # независимо от текущей директории, если пакет доступен в этом venv.
             subprocess.run(
-                [sys.executable, str(script_dir / "transcribe_longform.py"),
+                [sys.executable, "-m", "speech_to_text_gigaam.transcribe_longform",
                  str(chunk_audio), "--output", str(chunk_txt), "--save-json"],
                 check=True,
             )

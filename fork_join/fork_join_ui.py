@@ -17,7 +17,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
-import fork_join
+from fork_join import fork_join
 
 
 VIDEO_FILETYPES = [("Видео MP4", "*.mp4"), ("Все файлы", "*.*")]

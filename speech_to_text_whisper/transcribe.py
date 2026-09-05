@@ -16,7 +16,7 @@ from pathlib import Path
 
 from faster_whisper import WhisperModel
 
-from lecture_common import format_timestamp, group_into_paragraphs
+from speech_to_text_whisper.lecture_common import format_timestamp, group_into_paragraphs
 
 DEFAULT_MODEL = "large-v3"
 

@@ -18,20 +18,17 @@
 
 import argparse
 import json
-import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
-from filler_words import remove_fillers  # noqa: E402
-
-from lecture_common import (
+from common.filler_words import remove_fillers
+from speech_to_text_whisper.lecture_common import (
     format_timestamp,
     group_into_sentence_paragraphs,
     group_segments_by_pause,
     segment_words_with_timestamps,
 )
-from punctuation_model import SbertPuncCase
+from speech_to_text_whisper.punctuation_model import SbertPuncCase
 
 
 def main():

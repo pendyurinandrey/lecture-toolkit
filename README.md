@@ -5,23 +5,28 @@
 
 Типичный полный конвейер:
 
-1. **fork-join** — вырезать нужные фрагменты из исходных видео (Zoom-записей и
+1. **fork_join** — вырезать нужные фрагменты из исходных видео (Zoom-записей и
    т.п.), склеить их в одну лекцию и извлечь звуковую дорожку в MP3.
-2. **speech-to-text-whisper** или **speech-to-text-gigaam** — распознать эту
+2. **speech_to_text_whisper** или **speech_to_text_gigaam** — распознать эту
    дорожку в текст (два независимых движка на выбор, см. ниже) и получить
    читаемый текст с пунктуацией, без слов-паразитов.
 
 ## pipeline_ui.py — графический интерфейс для полного конвейера
 
-Самый простой способ запустить оба шага (fork-join + speech-to-text-gigaam)
+Самый простой способ запустить оба шага (fork_join + speech_to_text_gigaam)
 без командной строки:
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+pip install -e .
 python3 pipeline_ui.py
 ```
+
+(`pip install -e .` регистрирует пакеты репозитория — `fork_join`, `common`,
+`speech_to_text_gigaam`, `speech_to_text_whisper` — в этом venv, чтобы их
+можно было импортировать без ручной возни с `sys.path`; см. `pyproject.toml`.)
 
 В окне: собираете список видео/фрагментов так же, как в `fork_join_ui.py`
 (см. ниже), указываете пути для видео/аудио/транскрипции, при необходимости
@@ -30,15 +35,15 @@ python3 pipeline_ui.py
 и жмёте "Запустить". Лог и время выполнения каждого шага отображаются в
 окне программы.
 
-Использует **speech-to-text-gigaam** (не whisper) — движок жёстко не
+Использует **speech_to_text_gigaam** (не whisper) — движок жёстко не
 настраивается, см. таблицу ниже, почему. Перед первым запуском также
 нужны переменные окружения/аккаунт Hugging Face — см. раздел
-`speech-to-text-gigaam` ниже (проверяется и подсказывается автоматически
+`speech_to_text_gigaam` ниже (проверяется и подсказывается автоматически
 при нажатии "Запустить", если что-то не готово).
 
 ## Какой движок распознавания речи выбрать
 
-| | speech-to-text-whisper | speech-to-text-gigaam |
+| | speech_to_text_whisper | speech_to_text_gigaam |
 |---|---|---|
 | Движок | faster-whisper (large-v3) | GigaAM-v3 (Сбер) |
 | Точность на русском | Хорошая | Заметно лучше на именах/терминах — см. сравнение в истории разработки |
@@ -54,30 +59,32 @@ venv не получится.
 
 ## Требования
 
-- Python 3
+- Python 3 (≥3.10)
 - [ffmpeg](https://ffmpeg.org/) в `PATH` (`brew install ffmpeg`) — нужен всем модулям
-- `fork-join` использует только стандартную библиотеку (`fork_join_ui.py` —
+- `fork_join` использует только стандартную библиотеку (`fork_join_ui.py` —
   ещё и `tkinter`, входит в стандартную поставку Python), отдельных
   зависимостей не требует.
-- **Корневой `requirements.txt`** — для `pipeline_ui.py`: `fork-join` (без
-  доп. зависимостей) + `speech-to-text-gigaam` + `wakepy` (для чекбокса "не
+- **Корневой `requirements.txt`** — для `pipeline_ui.py`: `fork_join` (без
+  доп. зависимостей) + `speech_to_text_gigaam` + `wakepy` (для чекбокса "не
   давать уснуть") в одном venv:
 
   ```bash
   python3 -m venv venv
   source venv/bin/activate
   pip install -r requirements.txt
+  pip install -e .
   ```
 
-- Для **`speech-to-text-whisper`** как отдельного инструмента (не через
-  `pipeline_ui.py`) — свой venv и `speech-to-text-whisper/requirements.txt`
-  (несовместимая версия `torch` с тем, что нужно GigaAM).
-- Для **`speech-to-text-gigaam`** как отдельного инструмента (не через
-  `pipeline_ui.py`) — свой venv и `speech-to-text-gigaam/requirements.txt`,
-  идентичный по содержимому корневому (кроме `wakepy`, который нужен только
-  `pipeline_ui.py`).
+- Для **`speech_to_text_whisper`** как отдельного инструмента (не через
+  `pipeline_ui.py`) — свой venv, `speech_to_text_whisper/requirements.txt`
+  (несовместимая версия `torch` с тем, что нужно GigaAM) и там же `pip install -e .`
+  из корня репозитория (нужен для импорта `common` и пакетного стиля запуска).
+- Для **`speech_to_text_gigaam`** как отдельного инструмента (не через
+  `pipeline_ui.py`) — свой venv, `speech_to_text_gigaam/requirements.txt`
+  (идентичный по содержимому корневому, кроме `wakepy`, который нужен только
+  `pipeline_ui.py`) и там же `pip install -e .` из корня репозитория.
 
-## fork-join
+## fork_join
 
 Нарезает фрагменты из MP4-файлов по конфигурации в JSON, склеивает их в единый
 MP4 (без перекодирования — сохраняя исходное качество) и дополнительно
@@ -88,14 +95,14 @@ MP4 (без перекодирования — сохраняя исходное
 Через командную строку:
 
 ```bash
-python3 fork-join/fork_join.py path/to/config.json
+python3 -m fork_join.fork_join path/to/config.json
 ```
 
 Либо через графический интерфейс, чтобы собрать конфигурацию без ручного
 редактирования JSON:
 
 ```bash
-python3 fork-join/fork_join_ui.py
+python3 -m fork_join.fork_join_ui
 ```
 
 ### Формат конфигурации
@@ -144,7 +151,7 @@ python3 fork-join/fork_join_ui.py
 - `output.videoPath` — полный путь к выходному видео файлу в формате MP4
 - `output.audioPath` — полный путь к выходному аудио файлу в формате MP3
 
-## speech-to-text-whisper
+## speech_to_text_whisper
 
 Локальная транскрибация лекции в текст: распознавание речи (`faster-whisper`,
 CPU, beam search + VAD) и последующее восстановление пунктуации/регистра
@@ -157,7 +164,7 @@ CPU, beam search + VAD) и последующее восстановление �
 ### 1. Распознавание речи
 
 ```bash
-python3 speech-to-text-whisper/transcribe.py lecture.mp3 --save-json
+python3 -m speech_to_text_whisper.transcribe lecture.mp3 --save-json
 ```
 
 Создаёт `lecture.txt` (черновой текст с таймкодами) и `lecture.json` (сырые
@@ -178,7 +185,7 @@ python3 speech-to-text-whisper/transcribe.py lecture.mp3 --save-json
 ### 2. Восстановление пунктуации
 
 ```bash
-python3 speech-to-text-whisper/restore_punctuation.py lecture.json
+python3 -m speech_to_text_whisper.restore_punctuation lecture.json
 ```
 
 Создаёт `lecture_punctuated.txt` — читаемый текст с восстановленной
@@ -199,7 +206,7 @@ python3 speech-to-text-whisper/restore_punctuation.py lecture.json
 фразу. Для таких мест пока нет автоматической проверки — при сомнении в
 конкретной фразе стоит сверить её с оригинальным аудио.
 
-## speech-to-text-gigaam
+## speech_to_text_gigaam
 
 Локальная транскрибация через [GigaAM-v3](https://github.com/salute-developers/GigaAM)
 (`v3_e2e_rnnt`) — модель уже сама расставляет пунктуацию и регистр, отдельный
@@ -208,32 +215,33 @@ python3 speech-to-text-whisper/restore_punctuation.py lecture.json
 ### Установка (отдельная от корневого `requirements.txt`)
 
 ```bash
-cd speech-to-text-gigaam
+cd speech_to_text_gigaam
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
+cd ..
+./speech_to_text_gigaam/venv/bin/pip install -e .
 ```
 
-Дополнительно нужны:
+Дополнительно нужны (проверяются автоматически при запуске — см. ниже):
 
 - **Аккаунт Hugging Face + токен** (бесплатно) — GigaAM использует VAD-модель
   `pyannote/segmentation-3.0` для нарезки длинного аудио, а она gated:
   1. Зарегистрироваться на [huggingface.co](https://huggingface.co/join)
   2. Принять условия на странице [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
   3. Создать токен с правами **Read** в [настройках](https://huggingface.co/settings/tokens)
-  4. `export HF_TOKEN="..."` в терминале перед запуском
-- **ffmpeg версии 4-8** рядом с основным ffmpeg — библиотека `torchcodec`
-  (через которую pyannote читает аудио) пока не поддерживает FFmpeg 9+:
-  ```bash
-  brew install ffmpeg@8
-  ```
-  (keg-only, не подменяет основной `ffmpeg` в PATH)
+  4. Один раз выполнить `huggingface-cli login` — токен закэшируется и
+     дальше будет подхватываться автоматически (либо задать `HF_TOKEN`
+     явно в переменной окружения)
+- **ffmpeg версии 4-8** — если ваш системный `ffmpeg` новее (проверяется
+  через `ffmpeg -version`), при запуске выведется понятная ошибка с тем, что
+  нужно указать путь к совместимой версии через переменную окружения
+  `DYLD_FALLBACK_LIBRARY_PATH` (на Linux — `LD_LIBRARY_PATH`); способ
+  установки такой версии зависит от вашей ОС и здесь не приводится
 
 ### Использование
 
 ```bash
-export HF_TOKEN="..."
-DYLD_FALLBACK_LIBRARY_PATH="/opt/homebrew/opt/ffmpeg@8/lib" \
-    ./venv/bin/python transcribe_longform_chunked.py lecture.mp3 --output lecture.gigaam.txt
+./venv/bin/python -m speech_to_text_gigaam.transcribe_longform_chunked lecture.mp3 --output lecture.gigaam.txt
 ```
 
 Скрипт сам:
@@ -244,7 +252,7 @@ DYLD_FALLBACK_LIBRARY_PATH="/opt/homebrew/opt/ffmpeg@8/lib" \
    многочасовых файлах непредсказуемо наращивают потребление памяти вплоть
    до исчерпания swap, разбивка на куски с независимыми процессами это
    обходит;
-3. убирает слова-паразиты (аналогично `speech-to-text-whisper`, но с учётом
+3. убирает слова-паразиты (аналогично `speech_to_text_whisper`, но с учётом
    того, что слова уже несут пунктуацию — при удалении паразита его знаки
    препинания не теряются, а переносятся на соседние слова);
 4. перегруппировывает результат в абзацы строго по границе предложения
