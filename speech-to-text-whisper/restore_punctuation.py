@@ -18,10 +18,13 @@
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
-from filler_words import remove_fillers
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
+from filler_words import remove_fillers  # noqa: E402
+
 from lecture_common import (
     format_timestamp,
     group_into_sentence_paragraphs,

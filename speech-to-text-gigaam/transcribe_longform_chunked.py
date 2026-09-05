@@ -29,7 +29,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-from filler_words import remove_fillers
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
+from filler_words import remove_fillers  # noqa: E402
+
 from transcribe_longform import format_timestamp, group_into_sentence_paragraphs
 
 CHUNK_TARGET_SEC = 30 * 60   # целевая длина куска
