@@ -1,3 +1,7 @@
-faster-whisper==1.2.1
-transformers
-torch
+# Единый venv для pipeline_ui.py: fork-join (stdlib, без доп. зависимостей)
+# + speech-to-text-gigaam (см. speech-to-text-gigaam/requirements.txt) + wakepy
+# для pipeline_ui.py самого по себе. speech-to-text-whisper НЕ входит в этот
+# venv — у него конфликтующая версия torch, работает только отдельно.
+gigaam[torch,longform] @ git+https://github.com/salute-developers/GigaAM.git
+certifi
+wakepy

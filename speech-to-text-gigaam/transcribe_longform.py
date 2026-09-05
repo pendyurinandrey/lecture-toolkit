@@ -8,24 +8,23 @@ GigaAM (модель v3_e2e_rnnt) сам расставляет пунктуац
 перегруппировывает результат по границе предложения (после '.', '?' или '!'),
 используя пословную интерполяцию таймкодов внутри каждого сегмента.
 
-Требует переменную окружения HF_TOKEN — она должна быть установлена в том же
-терминале, где запускается этот скрипт; сам скрипт токен нигде не печатает
-и никуда, кроме HF Hub, не передаёт.
-
-Также требует DYLD_FALLBACK_LIBRARY_PATH на ffmpeg@8 (torchcodec, через который
-pyannote.audio читает аудио, пока не поддерживает FFmpeg 9 — установленный в
-системе через `brew install ffmpeg`; `brew install ffmpeg@8` ставит
-совместимую версию рядом, не трогая основной ffmpeg в PATH).
+Нужны переменная окружения HF_TOKEN (для скачивания gated VAD-модели
+pyannote/segmentation-3.0) и, если установленный в системе FFmpeg новее
+версии 8, — DYLD_FALLBACK_LIBRARY_PATH на совместимую версию (torchcodec,
+через который pyannote читает аудио, версии 9+ пока не поддерживает).
+Обе проверки (check_ffmpeg_compatibility/ensure_hf_token) выполняются
+автоматически при запуске — токен сам подхватится из кэша `huggingface-cli
+login`, если уже не задан явно; для ffmpeg просто выводится понятная ошибка,
+если версия несовместима, а переменная не выставлена вручную.
 
 Использование:
-    export HF_TOKEN="..."
-    DYLD_FALLBACK_LIBRARY_PATH="/opt/homebrew/opt/ffmpeg@8/lib" \\
-        ./venv/bin/python transcribe_longform.py /path/to/lecture.mp3
+    ./venv/bin/python transcribe_longform.py /path/to/lecture.mp3
 """
 
 import argparse
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -34,6 +33,69 @@ import gigaam
 MODEL_NAME = "v3_e2e_rnnt"
 SENTENCE_END_CHARS = ".?!"
 PARAGRAPH_TARGET_CHARS = 500
+FFMPEG_MIN_SUPPORTED = 4
+FFMPEG_MAX_SUPPORTED = 8
+
+
+class EnvironmentCheckError(RuntimeError):
+    """Окружение не готово для запуска (несовместимый ffmpeg или нет HF-токена)."""
+
+
+def check_ffmpeg_compatibility() -> None:
+    """Предупреждает, если установленный FFmpeg несовместим с torchcodec —
+    не пытается ничего чинить сама (правильный способ зависит от ОС
+    пользователя), только даёт понятную инструкцию."""
+    if os.environ.get("DYLD_FALLBACK_LIBRARY_PATH"):
+        return  # пользователь уже настроил сам — доверяем
+
+    try:
+        out = subprocess.run(
+            ["ffmpeg", "-version"], capture_output=True, text=True, check=True, timeout=10,
+        ).stdout
+        # Формат первой строки: "ffmpeg version 9.0.1 Copyright (c) ..."
+        major = int(out.split()[2].split(".")[0])
+    except Exception:
+        return  # версию не удалось однозначно определить — не блокируем запуск
+
+    if FFMPEG_MIN_SUPPORTED <= major <= FFMPEG_MAX_SUPPORTED:
+        return
+
+    raise EnvironmentCheckError(
+        f"Обнаружен FFmpeg версии {major} — torchcodec (через него pyannote.audio "
+        f"внутри GigaAM читает аудио) поддерживает только версии "
+        f"{FFMPEG_MIN_SUPPORTED}-{FFMPEG_MAX_SUPPORTED}.\n"
+        "Установите совместимую версию FFmpeg рядом с текущей и укажите путь к её "
+        "библиотекам переменной окружения DYLD_FALLBACK_LIBRARY_PATH, например:\n"
+        '    export DYLD_FALLBACK_LIBRARY_PATH="/path/to/compatible/ffmpeg/lib"\n'
+        "(на Linux аналогичная переменная называется LD_LIBRARY_PATH)."
+    )
+
+
+def ensure_hf_token() -> None:
+    """Если HF_TOKEN не задан явно, подставляет токен, сохранённый локально
+    командой `huggingface-cli login`. Бросает EnvironmentCheckError, если
+    токена нет нигде."""
+    if os.environ.get("HF_TOKEN"):
+        return
+
+    try:
+        from huggingface_hub import get_token
+        token = get_token()
+    except ImportError:
+        token = None
+
+    if token:
+        os.environ["HF_TOKEN"] = token
+        return
+
+    raise EnvironmentCheckError(
+        "Не найден токен Hugging Face — он нужен для скачивания VAD-модели "
+        "pyannote/segmentation-3.0.\n"
+        "Выполните один раз:\n"
+        "    huggingface-cli login\n"
+        "и примите условия использования на "
+        "https://huggingface.co/pyannote/segmentation-3.0"
+    )
 
 
 def format_timestamp(seconds: float) -> str:
@@ -83,11 +145,11 @@ def main():
     parser.add_argument("--save-json", action="store_true", help="Сохранить сырые VAD-сегменты в .json рядом с .txt")
     args = parser.parse_args()
 
-    if not os.getenv("HF_TOKEN"):
-        raise SystemExit(
-            "Переменная окружения HF_TOKEN не установлена.\n"
-            "Выполните в этом же терминале: export HF_TOKEN=\"ваш_токен\""
-        )
+    try:
+        check_ffmpeg_compatibility()
+        ensure_hf_token()
+    except EnvironmentCheckError as e:
+        raise SystemExit(str(e))
 
     audio_path = args.audio.expanduser().resolve()
     if not audio_path.exists():

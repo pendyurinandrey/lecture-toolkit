@@ -11,6 +11,31 @@
    дорожку в текст (два независимых движка на выбор, см. ниже) и получить
    читаемый текст с пунктуацией, без слов-паразитов.
 
+## pipeline_ui.py — графический интерфейс для полного конвейера
+
+Самый простой способ запустить оба шага (fork-join + speech-to-text-gigaam)
+без командной строки:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python3 pipeline_ui.py
+```
+
+В окне: собираете список видео/фрагментов так же, как в `fork_join_ui.py`
+(см. ниже), указываете пути для видео/аудио/транскрипции, при необходимости
+отключаете чекбоксы "Выполнить распознавание речи (GigaAM)", "Убирать
+слова-паразиты" или "Не давать компьютеру уснуть во время обработки" —
+и жмёте "Запустить". Лог и время выполнения каждого шага отображаются в
+окне программы.
+
+Использует **speech-to-text-gigaam** (не whisper) — движок жёстко не
+настраивается, см. таблицу ниже, почему. Перед первым запуском также
+нужны переменные окружения/аккаунт Hugging Face — см. раздел
+`speech-to-text-gigaam` ниже (проверяется и подсказывается автоматически
+при нажатии "Запустить", если что-то не готово).
+
 ## Какой движок распознавания речи выбрать
 
 | | speech-to-text-whisper | speech-to-text-gigaam |
@@ -34,8 +59,9 @@ venv не получится.
 - `fork-join` использует только стандартную библиотеку (`fork_join_ui.py` —
   ещё и `tkinter`, входит в стандартную поставку Python), отдельных
   зависимостей не требует.
-- Для `speech-to-text-whisper` нужны Python-пакеты из `requirements.txt`
-  в корне репозитория:
+- **Корневой `requirements.txt`** — для `pipeline_ui.py`: `fork-join` (без
+  доп. зависимостей) + `speech-to-text-gigaam` + `wakepy` (для чекбокса "не
+  давать уснуть") в одном venv:
 
   ```bash
   python3 -m venv venv
@@ -43,8 +69,13 @@ venv не получится.
   pip install -r requirements.txt
   ```
 
-- Для `speech-to-text-gigaam` — отдельная среда и свои зависимости, см. раздел
-  модуля ниже (`speech-to-text-gigaam/requirements.txt`).
+- Для **`speech-to-text-whisper`** как отдельного инструмента (не через
+  `pipeline_ui.py`) — свой venv и `speech-to-text-whisper/requirements.txt`
+  (несовместимая версия `torch` с тем, что нужно GigaAM).
+- Для **`speech-to-text-gigaam`** как отдельного инструмента (не через
+  `pipeline_ui.py`) — свой venv и `speech-to-text-gigaam/requirements.txt`,
+  идентичный по содержимому корневому (кроме `wakepy`, который нужен только
+  `pipeline_ui.py`).
 
 ## fork-join
 
