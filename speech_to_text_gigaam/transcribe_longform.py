@@ -92,7 +92,7 @@ def ensure_hf_token() -> None:
         "Не найден токен Hugging Face — он нужен для скачивания VAD-модели "
         "pyannote/segmentation-3.0.\n"
         "Выполните один раз:\n"
-        "    huggingface-cli login\n"
+        "    hf auth login\n"
         "и примите условия использования на "
         "https://huggingface.co/pyannote/segmentation-3.0"
     )

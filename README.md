@@ -61,12 +61,11 @@ venv не получится.
 
 - Python 3 (≥3.10)
 - [ffmpeg](https://ffmpeg.org/) в `PATH` (`brew install ffmpeg`) — нужен всем модулям
-- `fork_join` использует только стандартную библиотеку, отдельных
-  зависимостей не требует (`tkinter` для `pipeline_ui.py` тоже входит в
-  стандартную поставку Python).
+- `fork_join` (модуль обработки видео) использует только стандартную
+  библиотеку, отдельных зависимостей не требует.
 - **Корневой `requirements.txt`** — для `pipeline_ui.py`: `fork_join` (без
   доп. зависимостей) + `speech_to_text_gigaam` + `wakepy` (для чекбокса "не
-  давать уснуть") в одном venv:
+  давать уснуть") + `PySide6` (GUI) в одном venv:
 
   ```bash
   python3 -m venv venv

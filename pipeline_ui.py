@@ -3,8 +3,11 @@
 Графический интерфейс для полного конвейера обработки лекции:
 fork-join (обязательный шаг) + speech-to-text через GigaAM-v3 (опциональный).
 
-Единственный GUI-файл проекта — редактор дерева файлов/фрагментов, блок
-Speech-to-text и защита от сна компьютера во время обработки в одном классе.
+Реализовано на PySide6 (Qt) — до этого использовался Tkinter, но его
+управление окнами/фокусом на macOS регулярно приводило к тому, что клики по
+кнопкам переставали регистрироваться после модальных диалогов (см. историю
+разработки). Qt использует собственное, значительно более зрелое управление
+окнами/модальностью, что должно снять эту категорию проблем.
 
 Использование:
     python3 -m venv venv && source venv/bin/activate
@@ -15,13 +18,32 @@ Speech-to-text и защита от сна компьютера во время 
 
 import json
 import os
-import queue
+import sys
 import threading
 import time
-import tkinter as tk
 from contextlib import nullcontext
 from pathlib import Path
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QDialog,
+    QFileDialog,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from fork_join import fork_join
 from speech_to_text_gigaam import transcribe_longform_chunked
@@ -31,230 +53,211 @@ from speech_to_text_gigaam.transcribe_longform import (
     ensure_hf_token,
 )
 
-VIDEO_FILETYPES = [("Видео MP4", "*.mp4"), ("Все файлы", "*.*")]
-TEXT_FILETYPES = [("Текстовый файл", "*.txt")]
+VIDEO_FILTER = "Видео MP4 (*.mp4);;Все файлы (*)"
+TEXT_FILTER = "Текстовый файл (*.txt)"
 
 
-class FragmentDialog(tk.Toplevel):
+class FragmentDialog(QDialog):
     """Модальный диалог ввода start/end фрагмента в формате HH:mm:ss."""
 
-    def __init__(self, parent, start: str = "00:00:00", end: str = "00:00:00"):
+    def __init__(self, parent=None, start: str = "00:00:00", end: str = "00:00:00"):
         super().__init__(parent)
-        self.title("Фрагмент")
-        self.resizable(False, False)
-        self.transient(parent)
-        self.result = None
+        self.setWindowTitle("Фрагмент")
+        self.result_value = None
 
-        form = ttk.Frame(self, padding=12)
-        form.grid(row=0, column=0, sticky="nsew")
+        layout = QGridLayout(self)
 
-        ttk.Label(form, text="Начало (ЧЧ:ММ:СС):").grid(row=0, column=0, sticky="w", pady=4)
-        self.start_var = tk.StringVar(value=start)
-        start_entry = ttk.Entry(form, textvariable=self.start_var, width=12)
-        start_entry.grid(row=0, column=1, pady=4, padx=(8, 0))
+        layout.addWidget(QLabel("Начало (ЧЧ:ММ:СС):"), 0, 0)
+        self.start_edit = QLineEdit(start)
+        layout.addWidget(self.start_edit, 0, 1)
 
-        ttk.Label(form, text="Конец (ЧЧ:ММ:СС):").grid(row=1, column=0, sticky="w", pady=4)
-        self.end_var = tk.StringVar(value=end)
-        end_entry = ttk.Entry(form, textvariable=self.end_var, width=12)
-        end_entry.grid(row=1, column=1, pady=4, padx=(8, 0))
+        layout.addWidget(QLabel("Конец (ЧЧ:ММ:СС):"), 1, 0)
+        self.end_edit = QLineEdit(end)
+        layout.addWidget(self.end_edit, 1, 1)
 
-        btns = ttk.Frame(form)
-        btns.grid(row=2, column=0, columnspan=2, pady=(12, 0), sticky="e")
-        ttk.Button(btns, text="Отмена", command=self._cancel).pack(side="right", padx=(6, 0))
-        ttk.Button(btns, text="OK", command=self._ok).pack(side="right")
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel_btn = QPushButton("Отмена")
+        cancel_btn.clicked.connect(self.reject)
+        buttons.addWidget(cancel_btn)
+        ok_btn = QPushButton("OK")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self._on_ok)
+        buttons.addWidget(ok_btn)
+        layout.addLayout(buttons, 2, 0, 1, 2)
 
-        self.bind("<Return>", lambda e: self._ok())
-        self.bind("<Escape>", lambda e: self._cancel())
+        self.start_edit.setFocus()
+        self.start_edit.selectAll()
 
-        start_entry.focus_set()
-        self.grab_set()
-        self.wait_window(self)
-
-    def _ok(self):
-        start = self.start_var.get().strip()
-        end = self.end_var.get().strip()
+    def _on_ok(self):
+        start = self.start_edit.text().strip()
+        end = self.end_edit.text().strip()
         try:
             start_s = fork_join.hhmmss_to_seconds(start)
             end_s = fork_join.hhmmss_to_seconds(end)
         except ValueError as e:
-            messagebox.showerror("Некорректное время", str(e), parent=self)
+            QMessageBox.critical(self, "Некорректное время", str(e))
             return
         if end_s <= start_s:
-            messagebox.showerror(
-                "Некорректный диапазон",
+            QMessageBox.critical(
+                self, "Некорректный диапазон",
                 f'"Конец" ({end}) должен быть больше "Начала" ({start})',
-                parent=self,
             )
             return
-        self.result = {"start": start, "end": end}
-        self.destroy()
-
-    def _cancel(self):
-        self.result = None
-        self.destroy()
+        self.result_value = {"start": start, "end": end}
+        self.accept()
 
 
-class PipelineUI(tk.Tk):
-    SEG_PREFIX = "seg"
+class PipelineUI(QWidget):
+    # Сигналы для обновления UI из фонового потока — Qt автоматически
+    # маршалит их на главный поток (аналог queue.Queue + polling в Tkinter,
+    # но встроенный и надёжный).
+    log_signal = Signal(str)
+    done_signal = Signal()
+    error_signal = Signal(str)
 
     def __init__(self):
         super().__init__()
-        self.title("Lecture Pipeline")
+        self.setWindowTitle("Lecture Pipeline")
 
         self.segments = []  # [{"path": str, "fragments": [{"start": str, "end": str}, ...]}]
-        self.log_queue = queue.Queue()
         self.worker_thread = None
+
+        self.log_signal.connect(self._log)
+        self.done_signal.connect(self._on_done)
+        self.error_signal.connect(self._on_error)
 
         self._build_widgets()
         self._refresh_tree()
         self._center_window(780, 760)
 
     def _center_window(self, width: int, height: int) -> None:
-        x = (self.winfo_screenwidth() - width) // 2
-        y = (self.winfo_screenheight() - height) // 2
-        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.resize(width, height)
+        screen = QApplication.primaryScreen().availableGeometry()
+        x = screen.x() + (screen.width() - width) // 2
+        y = screen.y() + (screen.height() - height) // 2
+        self.move(x, y)
 
     # ------------------------------------------------------------------ UI
 
     def _build_widgets(self):
-        root = ttk.Frame(self, padding=10)
-        root.pack(fill="both", expand=True)
-        root.rowconfigure(1, weight=1)
-        root.columnconfigure(0, weight=1)
+        layout = QVBoxLayout(self)
 
-        ttk.Label(root, text="Видеофайлы и фрагменты", font=("", 11, "bold")).grid(
-            row=0, column=0, sticky="w"
-        )
+        title_label = QLabel("Видеофайлы и фрагменты")
+        font = title_label.font()
+        font.setBold(True)
+        font.setPointSize(font.pointSize() + 1)
+        title_label.setFont(font)
+        layout.addWidget(title_label)
 
-        tree_frame = ttk.Frame(root)
-        tree_frame.grid(row=1, column=0, sticky="nsew", pady=(4, 8))
-        tree_frame.rowconfigure(0, weight=1)
-        tree_frame.columnconfigure(0, weight=1)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Путь к файлу / фрагмент", "Начало", "Конец"])
+        self.tree.setColumnWidth(0, 420)
+        layout.addWidget(self.tree, stretch=1)
 
-        self.tree = ttk.Treeview(
-            tree_frame, columns=("start", "end"), selectmode="browse"
-        )
-        self.tree.heading("#0", text="Путь к файлу / фрагмент")
-        self.tree.heading("start", text="Начало")
-        self.tree.heading("end", text="Конец")
-        self.tree.column("#0", width=440)
-        self.tree.column("start", width=100, anchor="center")
-        self.tree.column("end", width=100, anchor="center")
-        self.tree.grid(row=0, column=0, sticky="nsew")
+        tree_buttons = QHBoxLayout()
+        add_seg_btn = QPushButton("Добавить видеофайл")
+        add_seg_btn.clicked.connect(self._add_segment)
+        tree_buttons.addWidget(add_seg_btn)
+        add_frag_btn = QPushButton("Добавить фрагмент")
+        add_frag_btn.clicked.connect(self._add_fragment)
+        tree_buttons.addWidget(add_frag_btn)
+        edit_btn = QPushButton("Изменить")
+        edit_btn.clicked.connect(self._edit_selected)
+        tree_buttons.addWidget(edit_btn)
+        delete_btn = QPushButton("Удалить")
+        delete_btn.clicked.connect(self._delete_selected)
+        tree_buttons.addWidget(delete_btn)
+        tree_buttons.addSpacing(12)
+        up_btn = QPushButton("Вверх")
+        up_btn.clicked.connect(lambda: self._move_selected(-1))
+        tree_buttons.addWidget(up_btn)
+        down_btn = QPushButton("Вниз")
+        down_btn.clicked.connect(lambda: self._move_selected(1))
+        tree_buttons.addWidget(down_btn)
+        tree_buttons.addStretch()
+        layout.addLayout(tree_buttons)
 
-        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        output_group = QGroupBox("Результат fork-join")
+        output_layout = QGridLayout(output_group)
 
-        tree_buttons = ttk.Frame(root)
-        tree_buttons.grid(row=2, column=0, sticky="w", pady=(0, 10))
-        ttk.Button(tree_buttons, text="Добавить видеофайл", command=self._add_segment).pack(
-            side="left"
-        )
-        ttk.Button(tree_buttons, text="Добавить фрагмент", command=self._add_fragment).pack(
-            side="left", padx=(6, 0)
-        )
-        ttk.Button(tree_buttons, text="Изменить", command=self._edit_selected).pack(
-            side="left", padx=(6, 0)
-        )
-        ttk.Button(tree_buttons, text="Удалить", command=self._delete_selected).pack(
-            side="left", padx=(6, 0)
-        )
-        ttk.Button(tree_buttons, text="Вверх", command=lambda: self._move_selected(-1)).pack(
-            side="left", padx=(12, 0)
-        )
-        ttk.Button(tree_buttons, text="Вниз", command=lambda: self._move_selected(1)).pack(
-            side="left", padx=(6, 0)
-        )
+        output_layout.addWidget(QLabel("Видео (MP4):"), 0, 0)
+        self.video_path_edit = QLineEdit()
+        output_layout.addWidget(self.video_path_edit, 0, 1)
+        video_browse_btn = QPushButton("Обзор...")
+        video_browse_btn.clicked.connect(self._browse_video_output)
+        output_layout.addWidget(video_browse_btn, 0, 2)
 
-        output_frame = ttk.LabelFrame(root, text="Результат fork-join", padding=10)
-        output_frame.grid(row=3, column=0, sticky="ew", pady=(0, 10))
-        output_frame.columnconfigure(1, weight=1)
+        output_layout.addWidget(QLabel("Аудио (MP3):"), 1, 0)
+        self.audio_path_edit = QLineEdit()
+        output_layout.addWidget(self.audio_path_edit, 1, 1)
+        audio_browse_btn = QPushButton("Обзор...")
+        audio_browse_btn.clicked.connect(self._browse_audio_output)
+        output_layout.addWidget(audio_browse_btn, 1, 2)
 
-        ttk.Label(output_frame, text="Видео (MP4):").grid(row=0, column=0, sticky="w")
-        self.video_path_var = tk.StringVar()
-        ttk.Entry(output_frame, textvariable=self.video_path_var).grid(
-            row=0, column=1, sticky="ew", padx=6
-        )
-        ttk.Button(output_frame, text="Обзор...", command=self._browse_video_output).grid(
-            row=0, column=2
-        )
-
-        ttk.Label(output_frame, text="Аудио (MP3):").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        self.audio_path_var = tk.StringVar()
-        ttk.Entry(output_frame, textvariable=self.audio_path_var).grid(
-            row=1, column=1, sticky="ew", padx=6, pady=(6, 0)
-        )
-        ttk.Button(output_frame, text="Обзор...", command=self._browse_audio_output).grid(
-            row=1, column=2, pady=(6, 0)
-        )
+        layout.addWidget(output_group)
 
         # -------------------------------------------------- speech-to-text
 
-        s2t_frame = ttk.LabelFrame(root, text="Speech-to-text (GigaAM)", padding=10)
-        s2t_frame.grid(row=4, column=0, sticky="ew", pady=(0, 10))
-        s2t_frame.columnconfigure(1, weight=1)
+        s2t_group = QGroupBox("Speech-to-text (GigaAM)")
+        s2t_layout = QGridLayout(s2t_group)
 
-        self.speech2text_var = tk.BooleanVar(value=True)
-        self.speech2text_check = ttk.Checkbutton(
-            s2t_frame, text="Выполнить распознавание речи (GigaAM)",
-            variable=self.speech2text_var, command=self._on_speech2text_toggle,
-        )
-        self.speech2text_check.grid(row=0, column=0, columnspan=3, sticky="w")
+        self.speech2text_check = QCheckBox("Выполнить распознавание речи (GigaAM)")
+        self.speech2text_check.setChecked(True)
+        self.speech2text_check.toggled.connect(self._on_speech2text_toggle)
+        s2t_layout.addWidget(self.speech2text_check, 0, 0, 1, 3)
 
-        self.transcript_label = ttk.Label(s2t_frame, text="Транскрипция (TXT):")
-        self.transcript_label.grid(row=1, column=0, sticky="w", pady=(6, 0))
-        self.transcript_path_var = tk.StringVar()
-        self.transcript_entry = ttk.Entry(s2t_frame, textvariable=self.transcript_path_var)
-        self.transcript_entry.grid(row=1, column=1, sticky="ew", padx=6, pady=(6, 0))
-        self.transcript_browse_btn = ttk.Button(
-            s2t_frame, text="Обзор...", command=self._browse_transcript_output
-        )
-        self.transcript_browse_btn.grid(row=1, column=2, pady=(6, 0))
+        self.transcript_label = QLabel("Транскрипция (TXT):")
+        s2t_layout.addWidget(self.transcript_label, 1, 0)
+        self.transcript_path_edit = QLineEdit()
+        s2t_layout.addWidget(self.transcript_path_edit, 1, 1)
+        self.transcript_browse_btn = QPushButton("Обзор...")
+        self.transcript_browse_btn.clicked.connect(self._browse_transcript_output)
+        s2t_layout.addWidget(self.transcript_browse_btn, 1, 2)
 
-        self.remove_fillers_var = tk.BooleanVar(value=True)
-        self.remove_fillers_check = ttk.Checkbutton(
-            s2t_frame, text="Убирать слова-паразиты (вот, ну и т.п.)",
-            variable=self.remove_fillers_var,
-        )
-        self.remove_fillers_check.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.remove_fillers_check = QCheckBox("Убирать слова-паразиты (вот, ну и т.п.)")
+        self.remove_fillers_check.setChecked(True)
+        s2t_layout.addWidget(self.remove_fillers_check, 2, 0, 1, 3)
+
+        layout.addWidget(s2t_group)
 
         # --------------------------------------------------------- прочее
 
-        self.keep_awake_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            root, text="Не давать компьютеру уснуть во время обработки",
-            variable=self.keep_awake_var,
-        ).grid(row=5, column=0, sticky="w", pady=(0, 10))
+        self.keep_awake_check = QCheckBox("Не давать компьютеру уснуть во время обработки")
+        self.keep_awake_check.setChecked(True)
+        layout.addWidget(self.keep_awake_check)
 
-        action_buttons = ttk.Frame(root)
-        action_buttons.grid(row=6, column=0, sticky="w", pady=(0, 8))
-        ttk.Button(action_buttons, text="Новый", command=self._reset_all).pack(side="left")
-        ttk.Button(action_buttons, text="Предпросмотр JSON", command=self._preview_json).pack(
-            side="left", padx=(6, 0)
-        )
-        ttk.Button(action_buttons, text="Сохранить JSON...", command=self._save_json).pack(
-            side="left", padx=(6, 0)
-        )
-        self.run_button = ttk.Button(
-            action_buttons, text="Запустить", command=self._run
-        )
-        self.run_button.pack(side="left", padx=(6, 0))
+        action_buttons = QHBoxLayout()
+        new_btn = QPushButton("Новый")
+        new_btn.clicked.connect(self._reset_all)
+        action_buttons.addWidget(new_btn)
+        preview_btn = QPushButton("Предпросмотр JSON")
+        preview_btn.clicked.connect(self._preview_json)
+        action_buttons.addWidget(preview_btn)
+        save_btn = QPushButton("Сохранить JSON...")
+        save_btn.clicked.connect(self._save_json)
+        action_buttons.addWidget(save_btn)
+        self.run_button = QPushButton("Запустить")
+        self.run_button.clicked.connect(self._run)
+        action_buttons.addWidget(self.run_button)
+        action_buttons.addStretch()
+        layout.addLayout(action_buttons)
 
-        self.progress = ttk.Progressbar(root, mode="indeterminate")
-        self.progress.grid(row=7, column=0, sticky="ew", pady=(0, 8))
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 1)
+        self.progress.setValue(0)
+        layout.addWidget(self.progress)
 
-        ttk.Label(root, text="Журнал:").grid(row=8, column=0, sticky="w")
-        self.log_text = scrolledtext.ScrolledText(root, height=14, state="disabled", wrap="word")
-        self.log_text.grid(row=9, column=0, sticky="nsew")
-        root.rowconfigure(9, weight=1)
+        layout.addWidget(QLabel("Журнал:"))
+        self.log_text = QPlainTextEdit()
+        self.log_text.setReadOnly(True)
+        layout.addWidget(self.log_text, stretch=1)
 
-    def _on_speech2text_toggle(self):
-        state = "normal" if self.speech2text_var.get() else "disabled"
-        self.transcript_label.configure(state=state)
-        self.transcript_entry.configure(state=state)
-        self.transcript_browse_btn.configure(state=state)
-        self.remove_fillers_check.configure(state=state)
+    def _on_speech2text_toggle(self, checked: bool):
+        self.transcript_label.setEnabled(checked)
+        self.transcript_path_edit.setEnabled(checked)
+        self.transcript_browse_btn.setEnabled(checked)
+        self.remove_fillers_check.setEnabled(checked)
 
     # --------------------------------------------------------------- state
 
@@ -263,96 +266,96 @@ class PipelineUI(tk.Tk):
 
         frag_idx is None, если выбран видеофайл (а не фрагмент).
         """
-        selection = self.tree.selection()
-        if not selection:
+        item = self.tree.currentItem()
+        if item is None:
             return None, None
-        iid = selection[0]
-        parts = iid.split("_")
-        seg_idx = int(parts[0][len(self.SEG_PREFIX):])
-        if len(parts) == 1:
-            return seg_idx, None
-        frag_idx = int(parts[1][len("frag"):])
-        return seg_idx, frag_idx
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(data, tuple):
+            return data
+        return data, None
 
-    def _refresh_tree(self, select_iid: str = None):
-        self.tree.delete(*self.tree.get_children())
+    def _refresh_tree(self, select=None):
+        self.tree.clear()
+        select_item = None
         for i, segment in enumerate(self.segments):
-            seg_iid = f"{self.SEG_PREFIX}{i}"
-            self.tree.insert("", "end", iid=seg_iid, text=segment["path"], open=True)
+            seg_item = QTreeWidgetItem([segment["path"], "", ""])
+            seg_item.setData(0, Qt.ItemDataRole.UserRole, i)
+            self.tree.addTopLevelItem(seg_item)
+            seg_item.setExpanded(True)
+            if select == i:
+                select_item = seg_item
             for j, fragment in enumerate(segment["fragments"]):
-                frag_iid = f"{seg_iid}_frag{j}"
-                self.tree.insert(
-                    seg_iid,
-                    "end",
-                    iid=frag_iid,
-                    text=f"Фрагмент {j + 1}",
-                    values=(fragment["start"], fragment["end"]),
+                frag_item = QTreeWidgetItem(
+                    [f"Фрагмент {j + 1}", fragment["start"], fragment["end"]]
                 )
-        if select_iid and self.tree.exists(select_iid):
-            self.tree.selection_set(select_iid)
+                frag_item.setData(0, Qt.ItemDataRole.UserRole, (i, j))
+                seg_item.addChild(frag_item)
+                if select == (i, j):
+                    select_item = frag_item
+        if select_item is not None:
+            self.tree.setCurrentItem(select_item)
 
     # ------------------------------------------------------------- editing
 
     def _add_segment(self):
-        path = filedialog.askopenfilename(title="Выберите видеофайл", filetypes=VIDEO_FILETYPES)
+        path, _ = QFileDialog.getOpenFileName(self, "Выберите видеофайл", "", VIDEO_FILTER)
         if not path:
             return
         self.segments.append({"path": path, "fragments": []})
-        seg_iid = f"{self.SEG_PREFIX}{len(self.segments) - 1}"
-        self._refresh_tree(select_iid=seg_iid)
+        self._refresh_tree(select=len(self.segments) - 1)
         self._add_fragment()
 
     def _add_fragment(self):
         seg_idx, _ = self._selected_indices()
         if seg_idx is None:
-            messagebox.showinfo("Добавить фрагмент", "Сначала выберите видеофайл.")
+            QMessageBox.information(self, "Добавить фрагмент", "Сначала выберите видеофайл.")
             return
         dialog = FragmentDialog(self)
-        if dialog.result is None:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        self.segments[seg_idx]["fragments"].append(dialog.result)
+        self.segments[seg_idx]["fragments"].append(dialog.result_value)
         frag_idx = len(self.segments[seg_idx]["fragments"]) - 1
-        self._refresh_tree(select_iid=f"{self.SEG_PREFIX}{seg_idx}_frag{frag_idx}")
+        self._refresh_tree(select=(seg_idx, frag_idx))
 
     def _edit_selected(self):
         seg_idx, frag_idx = self._selected_indices()
         if seg_idx is None:
-            messagebox.showinfo("Изменить", "Выберите видеофайл или фрагмент.")
+            QMessageBox.information(self, "Изменить", "Выберите видеофайл или фрагмент.")
             return
         if frag_idx is None:
-            new_path = filedialog.askopenfilename(
-                title="Выберите видеофайл",
-                initialfile=os.path.basename(self.segments[seg_idx]["path"]),
-                filetypes=VIDEO_FILETYPES,
+            new_path, _ = QFileDialog.getOpenFileName(
+                self, "Выберите видеофайл", self.segments[seg_idx]["path"], VIDEO_FILTER,
             )
             if not new_path:
                 return
             self.segments[seg_idx]["path"] = new_path
-            self._refresh_tree(select_iid=f"{self.SEG_PREFIX}{seg_idx}")
+            self._refresh_tree(select=seg_idx)
         else:
             fragment = self.segments[seg_idx]["fragments"][frag_idx]
             dialog = FragmentDialog(self, start=fragment["start"], end=fragment["end"])
-            if dialog.result is None:
+            if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
-            self.segments[seg_idx]["fragments"][frag_idx] = dialog.result
-            self._refresh_tree(select_iid=f"{self.SEG_PREFIX}{seg_idx}_frag{frag_idx}")
+            self.segments[seg_idx]["fragments"][frag_idx] = dialog.result_value
+            self._refresh_tree(select=(seg_idx, frag_idx))
 
     def _delete_selected(self):
         seg_idx, frag_idx = self._selected_indices()
         if seg_idx is None:
-            messagebox.showinfo("Удалить", "Выберите видеофайл или фрагмент для удаления.")
+            QMessageBox.information(self, "Удалить", "Выберите видеофайл или фрагмент для удаления.")
             return
         if frag_idx is None:
-            if not messagebox.askyesno(
-                "Удалить видеофайл",
+            reply = QMessageBox.question(
+                self, "Удалить видеофайл",
                 "Удалить выбранный видеофайл вместе со всеми его фрагментами?",
-            ):
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
                 return
             del self.segments[seg_idx]
             self._refresh_tree()
         else:
             del self.segments[seg_idx]["fragments"][frag_idx]
-            self._refresh_tree(select_iid=f"{self.SEG_PREFIX}{seg_idx}")
+            self._refresh_tree(select=seg_idx)
 
     def _move_selected(self, direction: int):
         seg_idx, frag_idx = self._selected_indices()
@@ -366,55 +369,50 @@ class PipelineUI(tk.Tk):
                 self.segments[new_idx],
                 self.segments[seg_idx],
             )
-            self._refresh_tree(select_iid=f"{self.SEG_PREFIX}{new_idx}")
+            self._refresh_tree(select=new_idx)
         else:
             fragments = self.segments[seg_idx]["fragments"]
             new_idx = frag_idx + direction
             if not (0 <= new_idx < len(fragments)):
                 return
             fragments[frag_idx], fragments[new_idx] = fragments[new_idx], fragments[frag_idx]
-            self._refresh_tree(select_iid=f"{self.SEG_PREFIX}{seg_idx}_frag{new_idx}")
+            self._refresh_tree(select=(seg_idx, new_idx))
 
     def _reset_all(self):
-        if self.segments or self.video_path_var.get() or self.audio_path_var.get():
-            if not messagebox.askyesno("Новый", "Очистить текущую конфигурацию?"):
+        if self.segments or self.video_path_edit.text() or self.audio_path_edit.text():
+            reply = QMessageBox.question(
+                self, "Новый", "Очистить текущую конфигурацию?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
                 return
         self.segments = []
-        self.video_path_var.set("")
-        self.audio_path_var.set("")
+        self.video_path_edit.setText("")
+        self.audio_path_edit.setText("")
         self._refresh_tree()
 
     # -------------------------------------------------------------- output
 
+    @staticmethod
+    def _ensure_extension(path: str, extension: str) -> str:
+        return path if path.endswith(extension) else path + extension
+
     def _browse_video_output(self):
-        path = filedialog.asksaveasfilename(
-            title="Куда сохранить итоговое видео",
-            defaultextension=".mp4",
-            filetypes=[("MP4 видео", "*.mp4")],
-        )
+        path, _ = QFileDialog.getSaveFileName(self, "Куда сохранить итоговое видео", "", "MP4 видео (*.mp4)")
         if path:
-            self.video_path_var.set(path)
+            self.video_path_edit.setText(self._ensure_extension(path, ".mp4"))
 
     def _browse_audio_output(self):
-        path = filedialog.asksaveasfilename(
-            title="Куда сохранить аудио",
-            defaultextension=".mp3",
-            filetypes=[("MP3 аудио", "*.mp3")],
-        )
+        path, _ = QFileDialog.getSaveFileName(self, "Куда сохранить аудио", "", "MP3 аудио (*.mp3)")
         if path:
-            self.audio_path_var.set(path)
+            self.audio_path_edit.setText(self._ensure_extension(path, ".mp3"))
 
     def _browse_transcript_output(self):
-        audio_path = self.audio_path_var.get().strip()
+        audio_path = self.audio_path_edit.text().strip()
         initial = f"{Path(audio_path).stem}_gigaam.txt" if audio_path else "transcript.txt"
-        path = filedialog.asksaveasfilename(
-            title="Куда сохранить транскрипцию",
-            defaultextension=".txt",
-            initialfile=initial,
-            filetypes=TEXT_FILETYPES,
-        )
+        path, _ = QFileDialog.getSaveFileName(self, "Куда сохранить транскрипцию", initial, TEXT_FILTER)
         if path:
-            self.transcript_path_var.set(path)
+            self.transcript_path_edit.setText(self._ensure_extension(path, ".txt"))
 
     # ------------------------------------------------------------- config
 
@@ -422,8 +420,8 @@ class PipelineUI(tk.Tk):
         return {
             "segments": self.segments,
             "output": {
-                "videoPath": self.video_path_var.get().strip(),
-                "audioPath": self.audio_path_var.get().strip(),
+                "videoPath": self.video_path_edit.text().strip(),
+                "audioPath": self.audio_path_edit.text().strip(),
             },
         }
 
@@ -432,7 +430,7 @@ class PipelineUI(tk.Tk):
         try:
             fork_join.validate_config(config)
         except fork_join.ConfigError as e:
-            messagebox.showerror("Некорректная конфигурация", str(e))
+            QMessageBox.critical(self, "Некорректная конфигурация", str(e))
             return None
         return config
 
@@ -442,37 +440,34 @@ class PipelineUI(tk.Tk):
             return
         text = json.dumps(config, ensure_ascii=False, indent=2)
 
-        preview = tk.Toplevel(self)
-        preview.title("Предпросмотр JSON")
-        preview.geometry("600x500")
-        widget = scrolledtext.ScrolledText(preview, wrap="none")
-        widget.pack(fill="both", expand=True)
-        widget.insert("1.0", text)
-        widget.configure(state="disabled")
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Предпросмотр JSON")
+        dialog.resize(600, 500)
+        dialog_layout = QVBoxLayout(dialog)
+        widget = QPlainTextEdit()
+        widget.setPlainText(text)
+        widget.setReadOnly(True)
+        widget.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        dialog_layout.addWidget(widget)
+        dialog.exec()
 
     def _save_json(self):
         config = self._validated_config()
         if config is None:
             return
-        path = filedialog.asksaveasfilename(
-            title="Сохранить конфигурацию",
-            defaultextension=".json",
-            filetypes=[("JSON", "*.json")],
-        )
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить конфигурацию", "", "JSON (*.json)")
         if not path:
             return
+        path = self._ensure_extension(path, ".json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
         self._log(f"Конфигурация сохранена: {path}")
-        messagebox.showinfo("Сохранено", f"Конфигурация сохранена:\n{path}")
+        QMessageBox.information(self, "Сохранено", f"Конфигурация сохранена:\n{path}")
 
     # ------------------------------------------------------------- running
 
     def _log(self, message: str):
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", message + "\n")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
+        self.log_text.appendPlainText(message)
 
     def _run(self):
         if self.worker_thread and self.worker_thread.is_alive():
@@ -485,18 +480,18 @@ class PipelineUI(tk.Tk):
         try:
             fork_join.check_ffmpeg()
         except fork_join.FFmpegError as e:
-            messagebox.showerror("ffmpeg не найден", str(e))
+            QMessageBox.critical(self, "ffmpeg не найден", str(e))
             return
 
-        run_speech2text = self.speech2text_var.get()
-        transcript_path = self.transcript_path_var.get().strip()
-        remove_fillers = self.remove_fillers_var.get()
-        keep_awake = self.keep_awake_var.get()
+        run_speech2text = self.speech2text_check.isChecked()
+        transcript_path = self.transcript_path_edit.text().strip()
+        remove_fillers = self.remove_fillers_check.isChecked()
+        keep_awake = self.keep_awake_check.isChecked()
 
         if run_speech2text:
             if not transcript_path:
-                messagebox.showerror(
-                    "Транскрипция",
+                QMessageBox.critical(
+                    self, "Транскрипция",
                     "Укажите путь к файлу транскрипции или отключите шаг Speech-to-text.",
                 )
                 return
@@ -504,7 +499,7 @@ class PipelineUI(tk.Tk):
                 check_ffmpeg_compatibility()
                 ensure_hf_token()
             except EnvironmentCheckError as e:
-                messagebox.showerror("Окружение не готово", str(e))
+                QMessageBox.critical(self, "Окружение не готово", str(e))
                 return
 
         video_path = config["output"]["videoPath"]
@@ -515,14 +510,16 @@ class PipelineUI(tk.Tk):
         existing = [p for p in check_paths if p and os.path.exists(p)]
         if existing:
             names = "\n".join(existing)
-            if not messagebox.askyesno(
-                "Файл уже существует",
+            reply = QMessageBox.question(
+                self, "Файл уже существует",
                 f"Следующие файлы будут перезаписаны:\n{names}\n\nПродолжить?",
-            ):
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
                 return
 
-        self.run_button.configure(state="disabled")
-        self.progress.start(12)
+        self.run_button.setEnabled(False)
+        self.progress.setRange(0, 0)  # индикатор "занято" (busy/marquee)
         self._log("Запуск обработки...")
 
         self.worker_thread = threading.Thread(
@@ -531,10 +528,9 @@ class PipelineUI(tk.Tk):
             daemon=True,
         )
         self.worker_thread.start()
-        self.after(100, self._poll_log_queue)
 
     def _worker(self, config, run_speech2text, transcript_path, remove_fillers, keep_awake):
-        log = lambda msg: self.log_queue.put(("log", msg))  # noqa: E731
+        log = lambda msg: self.log_signal.emit(msg)  # noqa: E731
 
         if keep_awake:
             from wakepy import keep as wakepy_keep
@@ -562,50 +558,30 @@ class PipelineUI(tk.Tk):
                     )
                     log(f"Speech-to-text завершён за {(time.time() - t0) / 60:.1f} мин.")
 
-            self.log_queue.put(("done", None))
+            self.done_signal.emit()
         except (fork_join.ConfigError, fork_join.FFmpegError, EnvironmentCheckError) as e:
-            self.log_queue.put(("error", str(e)))
+            self.error_signal.emit(str(e))
         except Exception as e:  # noqa: BLE001 - показать пользователю любую неожиданную ошибку
-            self.log_queue.put(("error", f"Непредвиденная ошибка: {e}"))
+            self.error_signal.emit(f"Непредвиденная ошибка: {e}")
 
-    def _poll_log_queue(self):
-        finished = False
-        try:
-            while True:
-                kind, payload = self.log_queue.get_nowait()
-                if kind == "log":
-                    self._log(payload)
-                elif kind == "done":
-                    self._log("Готово.")
-                    messagebox.showinfo("Готово", "Обработка успешно завершена.")
-                    finished = True
-                elif kind == "error":
-                    self._log(f"Ошибка: {payload}")
-                    messagebox.showerror("Ошибка", payload)
-                    finished = True
-        except queue.Empty:
-            pass
+    def _on_done(self):
+        self._log("Готово.")
+        QMessageBox.information(self, "Готово", "Обработка успешно завершена.")
+        self.progress.setRange(0, 1)
+        self.run_button.setEnabled(True)
 
-        if finished:
-            self.progress.stop()
-            self.run_button.configure(state="normal")
-        else:
-            self.after(100, self._poll_log_queue)
+    def _on_error(self, message: str):
+        self._log(f"Ошибка: {message}")
+        QMessageBox.critical(self, "Ошибка", message)
+        self.progress.setRange(0, 1)
+        self.run_button.setEnabled(True)
 
 
 def main():
-    app = PipelineUI()
-    # На macOS окно Tkinter, запущенное не из полноценного .app-бандла
-    # (например, из PyCharm или терминала), не получает фокус автоматически
-    # и может оказаться позади запустившей его программы. Раньше здесь были
-    # -topmost и/или lift()+focus_force(), но оба варианта приводили к тому,
-    # что клики по кнопкам переставали нормально регистрироваться (первый
-    # клик как будто не доходил, требовался повторный) — судя по всему,
-    # наше собственное управление фокусом конфликтовало с фокусом на уровне
-    # macOS/Tk. Ничего не делаем — так же, как раньше в fork_join_ui.py,
-    # где такой проблемы не было; ценой этого окно иногда может появиться
-    # позади запустившей его программы (тогда просто Cmd+Tab).
-    app.mainloop()
+    app = QApplication(sys.argv)
+    window = PipelineUI()
+    window.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
