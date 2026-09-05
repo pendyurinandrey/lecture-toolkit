@@ -25,6 +25,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -35,6 +36,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenuBar,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -140,8 +142,31 @@ class PipelineUI(QWidget):
 
     # ------------------------------------------------------------------ UI
 
+    def _build_menu_bar(self) -> QMenuBar:
+        menu_bar = QMenuBar(self)
+        file_menu = menu_bar.addMenu("Файл")
+
+        new_action = QAction("Новый", self)
+        new_action.setShortcut(QKeySequence.StandardKey.New)
+        new_action.triggered.connect(self._reset_all)
+        file_menu.addAction(new_action)
+
+        preview_action = QAction("Предпросмотр JSON", self)
+        preview_action.triggered.connect(self._preview_json)
+        file_menu.addAction(preview_action)
+
+        file_menu.addSeparator()
+
+        quit_action = QAction("Выход", self)
+        quit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        quit_action.triggered.connect(self.close)
+        file_menu.addAction(quit_action)
+
+        return menu_bar
+
     def _build_widgets(self):
         layout = QVBoxLayout(self)
+        layout.setMenuBar(self._build_menu_bar())
 
         title_label = QLabel("Видеофайлы и фрагменты")
         font = title_label.font()
@@ -228,16 +253,11 @@ class PipelineUI(QWidget):
         layout.addWidget(self.keep_awake_check)
 
         action_buttons = QHBoxLayout()
-        new_btn = QPushButton("Новый")
-        new_btn.clicked.connect(self._reset_all)
-        action_buttons.addWidget(new_btn)
-        preview_btn = QPushButton("Предпросмотр JSON")
-        preview_btn.clicked.connect(self._preview_json)
-        action_buttons.addWidget(preview_btn)
-        save_btn = QPushButton("Сохранить JSON...")
-        save_btn.clicked.connect(self._save_json)
-        action_buttons.addWidget(save_btn)
+        action_buttons.addStretch()
         self.run_button = QPushButton("Запустить")
+        self.run_button.setDefault(True)
+        run_size = self.run_button.sizeHint()
+        self.run_button.setFixedSize(run_size.width() * 2, run_size.height() * 2)
         self.run_button.clicked.connect(self._run)
         action_buttons.addWidget(self.run_button)
         action_buttons.addStretch()
@@ -399,8 +419,16 @@ class PipelineUI(QWidget):
 
     def _browse_video_output(self):
         path, _ = QFileDialog.getSaveFileName(self, "Куда сохранить итоговое видео", "", "MP4 видео (*.mp4)")
-        if path:
-            self.video_path_edit.setText(self._ensure_extension(path, ".mp4"))
+        if not path:
+            return
+        path = self._ensure_extension(path, ".mp4")
+        self.video_path_edit.setText(path)
+
+        video_path = Path(path)
+        if not self.audio_path_edit.text().strip():
+            self.audio_path_edit.setText(str(video_path.with_suffix(".mp3")))
+        if self.speech2text_check.isChecked() and not self.transcript_path_edit.text().strip():
+            self.transcript_path_edit.setText(str(video_path.with_suffix(".txt")))
 
     def _browse_audio_output(self):
         path, _ = QFileDialog.getSaveFileName(self, "Куда сохранить аудио", "", "MP3 аудио (*.mp3)")
@@ -450,19 +478,6 @@ class PipelineUI(QWidget):
         widget.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         dialog_layout.addWidget(widget)
         dialog.exec()
-
-    def _save_json(self):
-        config = self._validated_config()
-        if config is None:
-            return
-        path, _ = QFileDialog.getSaveFileName(self, "Сохранить конфигурацию", "", "JSON (*.json)")
-        if not path:
-            return
-        path = self._ensure_extension(path, ".json")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-        self._log(f"Конфигурация сохранена: {path}")
-        QMessageBox.information(self, "Сохранено", f"Конфигурация сохранена:\n{path}")
 
     # ------------------------------------------------------------- running
 
