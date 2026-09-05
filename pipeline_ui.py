@@ -3,17 +3,19 @@
 Графический интерфейс для полного конвейера обработки лекции:
 fork-join (обязательный шаг) + speech-to-text через GigaAM-v3 (опциональный).
 
-Наследуется от fork_join_ui.ForkJoinUI — переиспользует редактор дерева
-файлов/фрагментов как есть, добавляя блок Speech-to-text и чекбокс защиты
-от сна компьютера во время обработки.
+Единственный GUI-файл проекта — редактор дерева файлов/фрагментов, блок
+Speech-to-text и защита от сна компьютера во время обработки в одном классе.
 
 Использование:
     python3 -m venv venv && source venv/bin/activate
     pip install -r requirements.txt
+    pip install -e .
     python3 pipeline_ui.py
 """
 
+import json
 import os
+import queue
 import threading
 import time
 import tkinter as tk
@@ -22,7 +24,6 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from fork_join import fork_join
-from fork_join import fork_join_ui
 from speech_to_text_gigaam import transcribe_longform_chunked
 from speech_to_text_gigaam.transcribe_longform import (
     EnvironmentCheckError,
@@ -30,13 +31,82 @@ from speech_to_text_gigaam.transcribe_longform import (
     ensure_hf_token,
 )
 
+VIDEO_FILETYPES = [("Видео MP4", "*.mp4"), ("Все файлы", "*.*")]
 TEXT_FILETYPES = [("Текстовый файл", "*.txt")]
 
 
-class PipelineUI(fork_join_ui.ForkJoinUI):
+class FragmentDialog(tk.Toplevel):
+    """Модальный диалог ввода start/end фрагмента в формате HH:mm:ss."""
+
+    def __init__(self, parent, start: str = "00:00:00", end: str = "00:00:00"):
+        super().__init__(parent)
+        self.title("Фрагмент")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.result = None
+
+        form = ttk.Frame(self, padding=12)
+        form.grid(row=0, column=0, sticky="nsew")
+
+        ttk.Label(form, text="Начало (ЧЧ:ММ:СС):").grid(row=0, column=0, sticky="w", pady=4)
+        self.start_var = tk.StringVar(value=start)
+        start_entry = ttk.Entry(form, textvariable=self.start_var, width=12)
+        start_entry.grid(row=0, column=1, pady=4, padx=(8, 0))
+
+        ttk.Label(form, text="Конец (ЧЧ:ММ:СС):").grid(row=1, column=0, sticky="w", pady=4)
+        self.end_var = tk.StringVar(value=end)
+        end_entry = ttk.Entry(form, textvariable=self.end_var, width=12)
+        end_entry.grid(row=1, column=1, pady=4, padx=(8, 0))
+
+        btns = ttk.Frame(form)
+        btns.grid(row=2, column=0, columnspan=2, pady=(12, 0), sticky="e")
+        ttk.Button(btns, text="Отмена", command=self._cancel).pack(side="right", padx=(6, 0))
+        ttk.Button(btns, text="OK", command=self._ok).pack(side="right")
+
+        self.bind("<Return>", lambda e: self._ok())
+        self.bind("<Escape>", lambda e: self._cancel())
+
+        start_entry.focus_set()
+        self.grab_set()
+        self.wait_window(self)
+
+    def _ok(self):
+        start = self.start_var.get().strip()
+        end = self.end_var.get().strip()
+        try:
+            start_s = fork_join.hhmmss_to_seconds(start)
+            end_s = fork_join.hhmmss_to_seconds(end)
+        except ValueError as e:
+            messagebox.showerror("Некорректное время", str(e), parent=self)
+            return
+        if end_s <= start_s:
+            messagebox.showerror(
+                "Некорректный диапазон",
+                f'"Конец" ({end}) должен быть больше "Начала" ({start})',
+                parent=self,
+            )
+            return
+        self.result = {"start": start, "end": end}
+        self.destroy()
+
+    def _cancel(self):
+        self.result = None
+        self.destroy()
+
+
+class PipelineUI(tk.Tk):
+    SEG_PREFIX = "seg"
+
     def __init__(self):
         super().__init__()
         self.title("Lecture Pipeline")
+
+        self.segments = []  # [{"path": str, "fragments": [{"start": str, "end": str}, ...]}]
+        self.log_queue = queue.Queue()
+        self.worker_thread = None
+
+        self._build_widgets()
+        self._refresh_tree()
         self._center_window(780, 760)
 
     def _center_window(self, width: int, height: int) -> None:
@@ -186,7 +256,153 @@ class PipelineUI(fork_join_ui.ForkJoinUI):
         self.transcript_browse_btn.configure(state=state)
         self.remove_fillers_check.configure(state=state)
 
+    # --------------------------------------------------------------- state
+
+    def _selected_indices(self):
+        """Возвращает (seg_idx, frag_idx) для текущего выделения дерева.
+
+        frag_idx is None, если выбран видеофайл (а не фрагмент).
+        """
+        selection = self.tree.selection()
+        if not selection:
+            return None, None
+        iid = selection[0]
+        parts = iid.split("_")
+        seg_idx = int(parts[0][len(self.SEG_PREFIX):])
+        if len(parts) == 1:
+            return seg_idx, None
+        frag_idx = int(parts[1][len("frag"):])
+        return seg_idx, frag_idx
+
+    def _refresh_tree(self, select_iid: str = None):
+        self.tree.delete(*self.tree.get_children())
+        for i, segment in enumerate(self.segments):
+            seg_iid = f"{self.SEG_PREFIX}{i}"
+            self.tree.insert("", "end", iid=seg_iid, text=segment["path"], open=True)
+            for j, fragment in enumerate(segment["fragments"]):
+                frag_iid = f"{seg_iid}_frag{j}"
+                self.tree.insert(
+                    seg_iid,
+                    "end",
+                    iid=frag_iid,
+                    text=f"Фрагмент {j + 1}",
+                    values=(fragment["start"], fragment["end"]),
+                )
+        if select_iid and self.tree.exists(select_iid):
+            self.tree.selection_set(select_iid)
+
+    # ------------------------------------------------------------- editing
+
+    def _add_segment(self):
+        path = filedialog.askopenfilename(title="Выберите видеофайл", filetypes=VIDEO_FILETYPES)
+        if not path:
+            return
+        self.segments.append({"path": path, "fragments": []})
+        seg_iid = f"{self.SEG_PREFIX}{len(self.segments) - 1}"
+        self._refresh_tree(select_iid=seg_iid)
+        self._add_fragment()
+
+    def _add_fragment(self):
+        seg_idx, _ = self._selected_indices()
+        if seg_idx is None:
+            messagebox.showinfo("Добавить фрагмент", "Сначала выберите видеофайл.")
+            return
+        dialog = FragmentDialog(self)
+        if dialog.result is None:
+            return
+        self.segments[seg_idx]["fragments"].append(dialog.result)
+        frag_idx = len(self.segments[seg_idx]["fragments"]) - 1
+        self._refresh_tree(select_iid=f"{self.SEG_PREFIX}{seg_idx}_frag{frag_idx}")
+
+    def _edit_selected(self):
+        seg_idx, frag_idx = self._selected_indices()
+        if seg_idx is None:
+            messagebox.showinfo("Изменить", "Выберите видеофайл или фрагмент.")
+            return
+        if frag_idx is None:
+            new_path = filedialog.askopenfilename(
+                title="Выберите видеофайл",
+                initialfile=os.path.basename(self.segments[seg_idx]["path"]),
+                filetypes=VIDEO_FILETYPES,
+            )
+            if not new_path:
+                return
+            self.segments[seg_idx]["path"] = new_path
+            self._refresh_tree(select_iid=f"{self.SEG_PREFIX}{seg_idx}")
+        else:
+            fragment = self.segments[seg_idx]["fragments"][frag_idx]
+            dialog = FragmentDialog(self, start=fragment["start"], end=fragment["end"])
+            if dialog.result is None:
+                return
+            self.segments[seg_idx]["fragments"][frag_idx] = dialog.result
+            self._refresh_tree(select_iid=f"{self.SEG_PREFIX}{seg_idx}_frag{frag_idx}")
+
+    def _delete_selected(self):
+        seg_idx, frag_idx = self._selected_indices()
+        if seg_idx is None:
+            messagebox.showinfo("Удалить", "Выберите видеофайл или фрагмент для удаления.")
+            return
+        if frag_idx is None:
+            if not messagebox.askyesno(
+                "Удалить видеофайл",
+                "Удалить выбранный видеофайл вместе со всеми его фрагментами?",
+            ):
+                return
+            del self.segments[seg_idx]
+            self._refresh_tree()
+        else:
+            del self.segments[seg_idx]["fragments"][frag_idx]
+            self._refresh_tree(select_iid=f"{self.SEG_PREFIX}{seg_idx}")
+
+    def _move_selected(self, direction: int):
+        seg_idx, frag_idx = self._selected_indices()
+        if seg_idx is None:
+            return
+        if frag_idx is None:
+            new_idx = seg_idx + direction
+            if not (0 <= new_idx < len(self.segments)):
+                return
+            self.segments[seg_idx], self.segments[new_idx] = (
+                self.segments[new_idx],
+                self.segments[seg_idx],
+            )
+            self._refresh_tree(select_iid=f"{self.SEG_PREFIX}{new_idx}")
+        else:
+            fragments = self.segments[seg_idx]["fragments"]
+            new_idx = frag_idx + direction
+            if not (0 <= new_idx < len(fragments)):
+                return
+            fragments[frag_idx], fragments[new_idx] = fragments[new_idx], fragments[frag_idx]
+            self._refresh_tree(select_iid=f"{self.SEG_PREFIX}{seg_idx}_frag{new_idx}")
+
+    def _reset_all(self):
+        if self.segments or self.video_path_var.get() or self.audio_path_var.get():
+            if not messagebox.askyesno("Новый", "Очистить текущую конфигурацию?"):
+                return
+        self.segments = []
+        self.video_path_var.set("")
+        self.audio_path_var.set("")
+        self._refresh_tree()
+
     # -------------------------------------------------------------- output
+
+    def _browse_video_output(self):
+        path = filedialog.asksaveasfilename(
+            title="Куда сохранить итоговое видео",
+            defaultextension=".mp4",
+            filetypes=[("MP4 видео", "*.mp4")],
+        )
+        if path:
+            self.video_path_var.set(path)
+
+    def _browse_audio_output(self):
+        path = filedialog.asksaveasfilename(
+            title="Куда сохранить аудио",
+            defaultextension=".mp3",
+            filetypes=[("MP3 аудио", "*.mp3")],
+        )
+        if path:
+            self.audio_path_var.set(path)
 
     def _browse_transcript_output(self):
         audio_path = self.audio_path_var.get().strip()
@@ -200,7 +416,63 @@ class PipelineUI(fork_join_ui.ForkJoinUI):
         if path:
             self.transcript_path_var.set(path)
 
+    # ------------------------------------------------------------- config
+
+    def _build_config(self) -> dict:
+        return {
+            "segments": self.segments,
+            "output": {
+                "videoPath": self.video_path_var.get().strip(),
+                "audioPath": self.audio_path_var.get().strip(),
+            },
+        }
+
+    def _validated_config(self):
+        config = self._build_config()
+        try:
+            fork_join.validate_config(config)
+        except fork_join.ConfigError as e:
+            messagebox.showerror("Некорректная конфигурация", str(e))
+            return None
+        return config
+
+    def _preview_json(self):
+        config = self._validated_config()
+        if config is None:
+            return
+        text = json.dumps(config, ensure_ascii=False, indent=2)
+
+        preview = tk.Toplevel(self)
+        preview.title("Предпросмотр JSON")
+        preview.geometry("600x500")
+        widget = scrolledtext.ScrolledText(preview, wrap="none")
+        widget.pack(fill="both", expand=True)
+        widget.insert("1.0", text)
+        widget.configure(state="disabled")
+
+    def _save_json(self):
+        config = self._validated_config()
+        if config is None:
+            return
+        path = filedialog.asksaveasfilename(
+            title="Сохранить конфигурацию",
+            defaultextension=".json",
+            filetypes=[("JSON", "*.json")],
+        )
+        if not path:
+            return
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        self._log(f"Конфигурация сохранена: {path}")
+        messagebox.showinfo("Сохранено", f"Конфигурация сохранена:\n{path}")
+
     # ------------------------------------------------------------- running
+
+    def _log(self, message: str):
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", message + "\n")
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
 
     def _run(self):
         if self.worker_thread and self.worker_thread.is_alive():
@@ -296,18 +568,43 @@ class PipelineUI(fork_join_ui.ForkJoinUI):
         except Exception as e:  # noqa: BLE001 - показать пользователю любую неожиданную ошибку
             self.log_queue.put(("error", f"Непредвиденная ошибка: {e}"))
 
+    def _poll_log_queue(self):
+        finished = False
+        try:
+            while True:
+                kind, payload = self.log_queue.get_nowait()
+                if kind == "log":
+                    self._log(payload)
+                elif kind == "done":
+                    self._log("Готово.")
+                    messagebox.showinfo("Готово", "Обработка успешно завершена.")
+                    finished = True
+                elif kind == "error":
+                    self._log(f"Ошибка: {payload}")
+                    messagebox.showerror("Ошибка", payload)
+                    finished = True
+        except queue.Empty:
+            pass
+
+        if finished:
+            self.progress.stop()
+            self.run_button.configure(state="normal")
+        else:
+            self.after(100, self._poll_log_queue)
+
 
 def main():
     app = PipelineUI()
     # На macOS окно Tkinter, запущенное не из полноценного .app-бандла
     # (например, из PyCharm или терминала), не получает фокус автоматически
-    # и может оказаться позади запустившей его программы. Кратковременный
-    # -topmost поднимает окно поверх остальных один раз при старте, не делая
-    # его залипающим "всегда сверху" на постоянной основе.
-    app.lift()
-    app.attributes("-topmost", True)
-    app.after_idle(app.attributes, "-topmost", False)
-    app.focus_force()
+    # и может оказаться позади запустившей его программы. Раньше здесь были
+    # -topmost и/или lift()+focus_force(), но оба варианта приводили к тому,
+    # что клики по кнопкам переставали нормально регистрироваться (первый
+    # клик как будто не доходил, требовался повторный) — судя по всему,
+    # наше собственное управление фокусом конфликтовало с фокусом на уровне
+    # macOS/Tk. Ничего не делаем — так же, как раньше в fork_join_ui.py,
+    # где такой проблемы не было; ценой этого окно иногда может появиться
+    # позади запустившей его программы (тогда просто Cmd+Tab).
     app.mainloop()
 
 
