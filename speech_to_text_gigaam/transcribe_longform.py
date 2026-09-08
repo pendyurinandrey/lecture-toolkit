@@ -45,8 +45,8 @@ def check_ffmpeg_compatibility() -> None:
     """Предупреждает, если установленный FFmpeg несовместим с torchcodec —
     не пытается ничего чинить сама (правильный способ зависит от ОС
     пользователя), только даёт понятную инструкцию."""
-    if os.environ.get("DYLD_FALLBACK_LIBRARY_PATH"):
-        return  # пользователь уже настроил сам — доверяем
+    if os.environ.get("DYLD_FALLBACK_LIBRARY_PATH") or os.environ.get("LD_LIBRARY_PATH"):
+        return  # пользователь уже настроил сам (macOS/Linux) — доверяем
 
     try:
         out = subprocess.run(
