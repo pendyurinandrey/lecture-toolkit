@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
 Нарезает фрагменты из MP4-файлов по конфигурации в JSON, склеивает их
-в единый MP4 (без перекодирования — сохраняя исходное качество) и
-дополнительно сохраняет звуковую дорожку итогового файла в MP3.
+в единый MP4 и дополнительно сохраняет звуковую дорожку итогового файла
+в M4A — оба шага копированием потоков, без перекодирования, без потери
+качества.
 
-Формат конфигурации: см. fork_join_format.txt
+Формат конфигурации: см. README.md
 
 Использование:
-    python3 fork_join.py path/to/config.json
+    python3 -m fork_join.fork_join path/to/config.json
 
-Модуль также предназначен для использования из fork_join_ui.py:
+Модуль также предназначен для использования из pipeline_ui.py:
 функции validate_config()/process_config() бросают ConfigError/FFmpegError
 вместо завершения процесса, что позволяет UI перехватывать ошибки.
 """
@@ -159,13 +160,15 @@ def build_video(segments: list, tmp_dir: str, video_path: str, log=lambda msg: N
 
 
 def extract_audio(video_path: str, audio_path: str) -> None:
+    # Копируем AAC-поток как есть (без перекодирования) в M4A-контейнер —
+    # исходный звук в MP4 уже сжат AAC, повторное сжатие в другой lossy-
+    # формат (например MP3) даёт вторую генерацию потерь без необходимости.
     os.makedirs(os.path.dirname(audio_path) or ".", exist_ok=True)
     run_ffmpeg(
         [
             "-i", video_path,
             "-vn",
-            "-acodec", "libmp3lame",
-            "-q:a", "0",
+            "-acodec", "copy",
             audio_path,
         ]
     )

@@ -126,7 +126,12 @@ def run(audio_path, output_path=None, chunk_minutes: float = CHUNK_TARGET_SEC / 
     with tempfile.TemporaryDirectory(prefix="gigaam_chunks_") as tmp_dir:
         for i in range(len(boundaries) - 1):
             start, end = boundaries[i], boundaries[i + 1]
-            chunk_audio = Path(tmp_dir) / f"chunk_{i:02d}.mp3"
+            # Расширение куска должно совпадать с расширением исходного
+            # файла — нарезка ниже использует "-c copy" (без перекодирования),
+            # а формат-контейнер, угадываемый ffmpeg по расширению, должен
+            # уметь хранить кодек исходного файла как есть (например, .mp3
+            # не может содержать AAC-поток из .m4a).
+            chunk_audio = Path(tmp_dir) / f"chunk_{i:02d}{audio_path.suffix}"
             chunk_txt = Path(tmp_dir) / f"chunk_{i:02d}.txt"
             chunk_json = chunk_txt.with_suffix(".json")
 

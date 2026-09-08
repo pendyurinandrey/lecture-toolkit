@@ -56,6 +56,7 @@ from speech_to_text_gigaam.transcribe_longform import (
 )
 
 VIDEO_FILTER = "Видео MP4 (*.mp4);;Все файлы (*)"
+AUDIO_FILTER = "M4A аудио (*.m4a)"
 TEXT_FILTER = "Текстовый файл (*.txt)"
 
 
@@ -213,7 +214,7 @@ class PipelineUI(QWidget):
         video_browse_btn.clicked.connect(self._browse_video_output)
         output_layout.addWidget(video_browse_btn, 0, 2)
 
-        output_layout.addWidget(QLabel("Аудио (MP3):"), 1, 0)
+        output_layout.addWidget(QLabel("Аудио (M4A):"), 1, 0)
         self.audio_path_edit = QLineEdit()
         output_layout.addWidget(self.audio_path_edit, 1, 1)
         audio_browse_btn = QPushButton("Обзор...")
@@ -426,14 +427,14 @@ class PipelineUI(QWidget):
 
         video_path = Path(path)
         if not self.audio_path_edit.text().strip():
-            self.audio_path_edit.setText(str(video_path.with_suffix(".mp3")))
+            self.audio_path_edit.setText(str(video_path.with_suffix(".m4a")))
         if self.speech2text_check.isChecked() and not self.transcript_path_edit.text().strip():
             self.transcript_path_edit.setText(str(video_path.with_suffix(".txt")))
 
     def _browse_audio_output(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Куда сохранить аудио", "", "MP3 аудио (*.mp3)")
+        path, _ = QFileDialog.getSaveFileName(self, "Куда сохранить аудио", "", AUDIO_FILTER)
         if path:
-            self.audio_path_edit.setText(self._ensure_extension(path, ".mp3"))
+            self.audio_path_edit.setText(self._ensure_extension(path, ".m4a"))
 
     def _browse_transcript_output(self):
         audio_path = self.audio_path_edit.text().strip()
