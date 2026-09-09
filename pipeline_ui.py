@@ -339,7 +339,9 @@ class PipelineUI(QWidget):
         return True
 
     def _add_segment(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Выберите видеофайл", "", VIDEO_FILTER)
+        movies_dir = Path.home() / "Movies"
+        default_dir = str(movies_dir) if movies_dir.is_dir() else ""
+        path, _ = QFileDialog.getOpenFileName(self, "Выберите видеофайл", default_dir, VIDEO_FILTER)
         if not path:
             return
         self.segments.append({"path": path, "fragments": []})

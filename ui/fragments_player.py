@@ -36,6 +36,40 @@ from common.silence import detect_silences, keep_intervals_between_silences
 from fork_join import fork_join
 
 
+class _CenteredMessageBox(QMessageBox):
+    """QMessageBox, центрирующийся над parent непосредственно перед показом.
+
+    На macOS QMessageBox по умолчанию рендерится через нативный NSAlert —
+    в этом случае move()/showEvent() на самом Qt-виджете вообще не влияют
+    на позицию видимого окна (оно нативное, Qt-геометрия для него не
+    применяется), поэтому сначала явно отключаем нативный рендеринг через
+    DontUseNativeDialog. showEvent(), а не adjustSize()+move() до первого
+    show(), — потому что до показа adjustSize() даёт размер меньше
+    реального (особенно с нативными иконками/кнопками)."""
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        parent = self.parentWidget()
+        if parent is not None:
+            parent_geo = parent.frameGeometry()
+            self.move(
+                parent_geo.center().x() - self.width() // 2,
+                parent_geo.center().y() - self.height() // 2,
+            )
+
+
+def _centered_message_box(
+    parent, icon: QMessageBox.Icon, title: str, text: str,
+    buttons: QMessageBox.StandardButton = QMessageBox.StandardButton.Ok,
+) -> QMessageBox.StandardButton:
+    """QMessageBox, явно отцентрированный над parent — статические
+    QMessageBox.information/question/critical на этом диалоге почему-то
+    открывались в левом верхнем углу экрана вместо центра родителя."""
+    box = _CenteredMessageBox(icon, title, text, buttons, parent)
+    box.setOption(QMessageBox.Option.DontUseNativeDialog, True)
+    return box.exec()
+
+
 def _update_multi_selection(current: list, index: int, extend: bool) -> list:
     """Обновляет список выбранных индексов по правилам обычного
     multi-select (максимум 2 одновременно, старые в начале списка):
@@ -445,7 +479,7 @@ class FragmentsPlayerDialog(QDialog):
             start_s = fork_join.hhmmss_to_seconds(self.start_edit.text())
             end_s = fork_join.hhmmss_to_seconds(self.end_edit.text())
         except ValueError as e:
-            QMessageBox.critical(self, "Некорректное время", str(e))
+            _centered_message_box(self, QMessageBox.Icon.Critical, "Некорректное время", str(e))
             self._refresh_numeric_fields()
             return
         lower = self.timeline.intervals[idx - 1][1] if idx > 0 else 0.0
@@ -455,8 +489,8 @@ class FragmentsPlayerDialog(QDialog):
             else self.duration
         )
         if not (lower <= start_s < end_s <= upper):
-            QMessageBox.critical(
-                self, "Некорректный диапазон",
+            _centered_message_box(
+                self, QMessageBox.Icon.Critical, "Некорректный диапазон",
                 f"Фрагмент должен быть в пределах {fork_join.seconds_to_hhmmss(lower)}"
                 f"–{fork_join.seconds_to_hhmmss(upper)}, и начало должно быть меньше конца.",
             )
@@ -468,8 +502,8 @@ class FragmentsPlayerDialog(QDialog):
     def _on_add_fragment(self) -> None:
         idx = self.timeline.add_interval_near(self.timeline.playhead)
         if idx is None:
-            QMessageBox.information(
-                self, "Добавить фрагмент",
+            _centered_message_box(
+                self, QMessageBox.Icon.Information, "Добавить фрагмент",
                 "Недостаточно свободного места рядом с текущей позицией плеера.",
             )
 
@@ -477,8 +511,8 @@ class FragmentsPlayerDialog(QDialog):
 
     def _on_detect_clicked(self) -> None:
         if self.timeline.intervals:
-            reply = QMessageBox.question(
-                self, "Определить паузы",
+            reply = _centered_message_box(
+                self, QMessageBox.Icon.Question, "Определить паузы",
                 "Текущие фрагменты будут заменены результатом автоопределения. Продолжить?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
@@ -501,8 +535,9 @@ class FragmentsPlayerDialog(QDialog):
         self.detect_button.setEnabled(True)
         self.detect_button.setText("Определить")
         if not intervals:
-            QMessageBox.information(
-                self, "Определить паузы", "Пауз длиннее заданного порога не найдено.",
+            _centered_message_box(
+                self, QMessageBox.Icon.Information, "Определить паузы",
+                "Пауз длиннее заданного порога не найдено.",
             )
             return
         self.timeline.set_intervals(intervals)
@@ -510,13 +545,15 @@ class FragmentsPlayerDialog(QDialog):
     def _on_detect_error(self, message: str) -> None:
         self.detect_button.setEnabled(True)
         self.detect_button.setText("Определить")
-        QMessageBox.critical(self, "Ошибка определения пауз", message)
+        _centered_message_box(self, QMessageBox.Icon.Critical, "Ошибка определения пауз", message)
 
     # ------------------------------------------------------------- готово
 
     def _on_ok(self) -> None:
         if not self.timeline.intervals:
-            QMessageBox.critical(self, "Нет фрагментов", "Добавьте хотя бы один фрагмент.")
+            _centered_message_box(
+                self, QMessageBox.Icon.Critical, "Нет фрагментов", "Добавьте хотя бы один фрагмент.",
+            )
             return
         self.result_fragments = [
             {"start": fork_join.seconds_to_hhmmss(s), "end": fork_join.seconds_to_hhmmss(e)}
