@@ -19,6 +19,7 @@ from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -346,17 +347,27 @@ class FragmentsPlayerDialog(QDialog):
         layout.addLayout(numeric_row)
 
         detect_group = QGroupBox("Автоопределение пауз")
-        detect_layout = QHBoxLayout(detect_group)
-        detect_layout.addWidget(QLabel("Определить паузы длиннее чем"))
+        detect_layout = QGridLayout(detect_group)
+
+        detect_layout.addWidget(QLabel("Определить паузы длиннее чем"), 0, 0)
         self.min_pause_spin = QSpinBox()
         self.min_pause_spin.setRange(1, 3600)
         self.min_pause_spin.setValue(60)
         self.min_pause_spin.setSuffix(" с")
-        detect_layout.addWidget(self.min_pause_spin)
+        detect_layout.addWidget(self.min_pause_spin, 0, 1)
         self.detect_button = QPushButton("Определить")
         self.detect_button.clicked.connect(self._on_detect_clicked)
-        detect_layout.addWidget(self.detect_button)
-        detect_layout.addStretch()
+        detect_layout.addWidget(self.detect_button, 0, 2)
+
+        detect_layout.addWidget(QLabel("Отступ в начале фрагмента"), 1, 0)
+        self.left_pad_spin = QSpinBox()
+        self.left_pad_spin.setRange(0, 3600)
+        self.left_pad_spin.setSingleStep(1)
+        self.left_pad_spin.setValue(1)
+        self.left_pad_spin.setSuffix(" с")
+        detect_layout.addWidget(self.left_pad_spin, 1, 1)
+
+        detect_layout.setColumnStretch(3, 1)
         layout.addWidget(detect_group)
 
         buttons = QHBoxLayout()
@@ -521,12 +532,13 @@ class FragmentsPlayerDialog(QDialog):
         self.detect_button.setEnabled(False)
         self.detect_button.setText("Определяю...")
         min_pause = float(self.min_pause_spin.value())
-        threading.Thread(target=self._detect_worker, args=(min_pause,), daemon=True).start()
+        left_pad = float(self.left_pad_spin.value())
+        threading.Thread(target=self._detect_worker, args=(min_pause, left_pad), daemon=True).start()
 
-    def _detect_worker(self, min_pause: float) -> None:
+    def _detect_worker(self, min_pause: float, left_pad: float) -> None:
         try:
             silences = detect_silences(self.video_path, min_duration=min_pause)
-            intervals = keep_intervals_between_silences(self.duration, silences)
+            intervals = keep_intervals_between_silences(self.duration, silences, left_pad=left_pad)
             self.detect_done_signal.emit(intervals)
         except Exception as e:  # noqa: BLE001 - показать пользователю любую ошибку ffmpeg
             self.detect_error_signal.emit(str(e))

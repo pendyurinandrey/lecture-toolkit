@@ -42,7 +42,7 @@ def detect_silences(path, min_duration: float = 0.5, noise_db: str = SILENCE_NOI
 
 
 def keep_intervals_between_silences(
-    duration: float, silences: list, min_length: float = 1.0, left_pad: float = 3.0,
+    duration: float, silences: list, min_length: float = 1.0, left_pad: float = 1.0,
 ) -> list:
     """Возвращает интервалы МЕЖДУ паузами — то, что нужно сохранить, если
     каждую найденную паузу вырезать. Интервалы короче min_length секунд
