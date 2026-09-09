@@ -49,7 +49,7 @@ from PySide6.QtWidgets import (
 
 from common.silence import get_media_duration
 from fork_join import fork_join
-from fragments_player import FragmentsPlayerDialog
+from ui.fragments_player import FragmentsPlayerDialog
 from speech_to_text_gigaam import transcribe_longform_chunked
 from speech_to_text_gigaam.transcribe_longform import (
     EnvironmentCheckError,
