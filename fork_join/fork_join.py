@@ -39,6 +39,13 @@ def hhmmss_to_seconds(value: str) -> float:
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
+def seconds_to_hhmmss(value: float) -> str:
+    total = round(value)
+    hours, remainder = divmod(total, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
 def check_ffmpeg() -> None:
     if shutil.which("ffmpeg") is None:
         raise FFmpegError(

@@ -47,7 +47,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from common.silence import get_media_duration
 from fork_join import fork_join
+from fragments_player import FragmentsPlayerDialog
 from speech_to_text_gigaam import transcribe_longform_chunked
 from speech_to_text_gigaam.transcribe_longform import (
     EnvironmentCheckError,
@@ -318,25 +320,44 @@ class PipelineUI(QWidget):
 
     # ------------------------------------------------------------- editing
 
+    def _open_fragments_dialog(self, seg_idx: int) -> bool:
+        """Открывает диалог плеера с фрагментами для segments[seg_idx].
+        Возвращает True, если пользователь подтвердил изменения (OK)."""
+        video_path = self.segments[seg_idx]["path"]
+        try:
+            duration = get_media_duration(video_path)
+        except Exception as e:  # noqa: BLE001 - показать пользователю любую ошибку ffprobe
+            QMessageBox.critical(
+                self, "Не удалось открыть видео",
+                f"Не удалось определить длительность файла:\n{e}",
+            )
+            return False
+        dialog = FragmentsPlayerDialog(self, video_path, duration, self.segments[seg_idx]["fragments"])
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        self.segments[seg_idx]["fragments"] = dialog.result_fragments
+        return True
+
     def _add_segment(self):
         path, _ = QFileDialog.getOpenFileName(self, "Выберите видеофайл", "", VIDEO_FILTER)
         if not path:
             return
         self.segments.append({"path": path, "fragments": []})
-        self._refresh_tree(select=len(self.segments) - 1)
-        self._add_fragment()
+        seg_idx = len(self.segments) - 1
+        if not self._open_fragments_dialog(seg_idx):
+            del self.segments[seg_idx]
+            self._refresh_tree()
+            return
+        self._refresh_tree(select=seg_idx)
 
     def _add_fragment(self):
         seg_idx, _ = self._selected_indices()
         if seg_idx is None:
             QMessageBox.information(self, "Добавить фрагмент", "Сначала выберите видеофайл.")
             return
-        dialog = FragmentDialog(self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        if not self._open_fragments_dialog(seg_idx):
             return
-        self.segments[seg_idx]["fragments"].append(dialog.result_value)
-        frag_idx = len(self.segments[seg_idx]["fragments"]) - 1
-        self._refresh_tree(select=(seg_idx, frag_idx))
+        self._refresh_tree(select=seg_idx)
 
     def _edit_selected(self):
         seg_idx, frag_idx = self._selected_indices()

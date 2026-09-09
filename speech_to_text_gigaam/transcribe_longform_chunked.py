@@ -25,13 +25,13 @@ transcribe_longform.py: ensure_hf_token/check_ffmpeg_compatibility).
 
 import argparse
 import json
-import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 from common.filler_words import remove_fillers
+from common.silence import detect_silences, get_media_duration
 from speech_to_text_gigaam.transcribe_longform import (
     EnvironmentCheckError,
     check_ffmpeg_compatibility,
@@ -42,32 +42,7 @@ from speech_to_text_gigaam.transcribe_longform import (
 
 CHUNK_TARGET_SEC = 30 * 60   # целевая длина куска
 SEARCH_WINDOW_SEC = 5 * 60   # искать паузу в пределах +/- этого окна от цели
-SILENCE_NOISE_DB = "-30dB"
 SILENCE_MIN_DUR = 0.5        # секунд тишины, чтобы считать паузой
-
-
-def get_audio_duration(audio_path: Path) -> float:
-    out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
-        capture_output=True, text=True, check=True,
-    )
-    return float(out.stdout.strip())
-
-
-def detect_silences(audio_path: Path):
-    """Возвращает список (start, end) пауз в аудио через ffmpeg silencedetect
-    (порог громкости, не нейросеть — быстрый разовый проход)."""
-    result = subprocess.run(
-        ["ffmpeg", "-i", str(audio_path),
-         "-af", f"silencedetect=noise={SILENCE_NOISE_DB}:d={SILENCE_MIN_DUR}",
-         "-f", "null", "-"],
-        capture_output=True, text=True,
-    )
-    log = result.stderr
-    starts = [float(m) for m in re.findall(r"silence_start:\s*([\d.]+)", log)]
-    ends = [float(m) for m in re.findall(r"silence_end:\s*([\d.]+)", log)]
-    return list(zip(starts, ends))
 
 
 def pick_split_points(duration: float, silences: list, target: float, window: float, log=print):
@@ -107,11 +82,11 @@ def run(audio_path, output_path=None, chunk_minutes: float = CHUNK_TARGET_SEC / 
         raise FileNotFoundError(f"Файл не найден: {audio_path}")
     output_path = Path(output_path) if output_path else audio_path.with_suffix(".gigaam.txt")
 
-    duration = get_audio_duration(audio_path)
+    duration = get_media_duration(audio_path)
     log(f"Длительность: {format_timestamp(duration)}")
 
     log("Ищу паузы в речи (ffmpeg silencedetect)...")
-    silences = detect_silences(audio_path)
+    silences = detect_silences(audio_path, min_duration=SILENCE_MIN_DUR)
     log(f"Найдено пауз: {len(silences)}")
 
     target = chunk_minutes * 60
