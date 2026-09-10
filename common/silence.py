@@ -41,9 +41,7 @@ def detect_silences(path, min_duration: float = 0.5, noise_db: str = SILENCE_NOI
     return list(zip(starts, ends))
 
 
-def keep_intervals_between_silences(
-    duration: float, silences: list, min_length: float = 1.0, left_pad: float = 1.0,
-) -> list:
+def keep_intervals_between_silences(duration: float, silences: list, min_length: float = 1.0) -> list:
     """Возвращает интервалы МЕЖДУ паузами — то, что нужно сохранить, если
     каждую найденную паузу вырезать. Интервалы короче min_length секунд
     отбрасываются: если две паузы найдены близко друг к другу, между ними
@@ -54,26 +52,16 @@ def keep_intervals_between_silences(
     которые сами по себе паузами не являются (например, начало/конец
     записи до/после лекции) — предполагается, что их подрежут вручную.
 
-    К началу каждого интервала (кроме случая, когда оно и так упирается в
-    0 или в конец предыдущего сохранённого интервала) добавляется left_pad
-    секунд назад — граница silence_end от ffmpeg отмечает момент, когда
-    звук возобновился, но начало самого первого слова может быть буквально
-    впритык к этой границе, поэтому небольшой запас слева подстраховывает
-    от потери начала фразы."""
+    Границы здесь НЕ подгоняются под реальные точки нарезки (ключевые
+    кадры) — этим занимается отдельно common.keyframes.snap_intervals_to_keyframes,
+    вызываемая следом в FragmentsPlayerDialog."""
     silences = sorted(silences)
-    raw_intervals = []
+    intervals = []
     cursor = 0.0
     for s_start, s_end in silences:
         if s_start - cursor >= min_length:
-            raw_intervals.append((cursor, s_start))
+            intervals.append((cursor, s_start))
         cursor = max(cursor, s_end)
     if duration - cursor >= min_length:
-        raw_intervals.append((cursor, duration))
-
-    intervals = []
-    prev_end = 0.0
-    for start, end in raw_intervals:
-        padded_start = max(prev_end, start - left_pad)
-        intervals.append((padded_start, end))
-        prev_end = end
+        intervals.append((cursor, duration))
     return intervals

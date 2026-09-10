@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from common.keyframes import get_keyframe_timestamps, snap_intervals_to_keyframes
 from common.silence import detect_silences, keep_intervals_between_silences
 from fork_join import fork_join
 
@@ -538,7 +539,9 @@ class FragmentsPlayerDialog(QDialog):
     def _detect_worker(self, min_pause: float, left_pad: float) -> None:
         try:
             silences = detect_silences(self.video_path, min_duration=min_pause)
-            intervals = keep_intervals_between_silences(self.duration, silences, left_pad=left_pad)
+            intervals = keep_intervals_between_silences(self.duration, silences)
+            keyframes = get_keyframe_timestamps(self.video_path)
+            intervals = snap_intervals_to_keyframes(intervals, keyframes, left_pad, self.duration)
             self.detect_done_signal.emit(intervals)
         except Exception as e:  # noqa: BLE001 - показать пользователю любую ошибку ffmpeg
             self.detect_error_signal.emit(str(e))
