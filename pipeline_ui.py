@@ -51,8 +51,8 @@ from common import ffmpeg
 from diarization import diarize_pyannote
 from fork_join import fork_join
 from ui.fragments_player import FragmentsPlayerDialog
-from speech_to_text_gigaam import transcribe_lecture
-from speech_to_text_gigaam.transcribe_longform import (
+from speech_to_text_gigaam import transcribe
+from speech_to_text_gigaam.environment import (
     EnvironmentCheckError,
     check_ffmpeg_compatibility,
     ensure_hf_token,
@@ -560,8 +560,8 @@ class PipelineUI(QWidget):
             check_paths.append(transcript_path)
         if diarize:
             check_paths += [
-                str(transcribe_lecture.diarization_path(transcript_path)),
-                str(transcribe_lecture.words_path(transcript_path)),
+                str(transcribe.diarization_path(transcript_path)),
+                str(transcribe.words_path(transcript_path)),
             ]
         existing = [p for p in check_paths if p and os.path.exists(p)]
         if existing:
@@ -606,7 +606,7 @@ class PipelineUI(QWidget):
 
                 if run_speech2text:
                     t0 = time.time()
-                    transcribe_lecture.run(
+                    transcribe.run(
                         config["output"]["audioPath"],
                         transcript_path,
                         keep_fillers=not remove_fillers,

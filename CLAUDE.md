@@ -29,10 +29,14 @@
 ## Тяжёлое — в отдельных процессах
 
 GUI-процесс (`pipeline_ui.py`) не считает и не держит модели. Диаризация и GigaAM запускаются
-отдельными процессами (`python -m ...` из `transcribe_lecture._run_module`): память
-освобождается после каждого этапа. Поэтому `diarization/__init__.py`, `speaker_labels.py` и
-верхний уровень `diarize_pyannote.py` не импортируют `pyannote` (а также `torch`/`numpy`) —
-только внутри функций. `torch` в GUI-процессе уже есть через `import gigaam`, это допустимо.
+отдельными процессами (`python -m ...` из `speech_to_text_gigaam/transcribe._run_module`): память
+освобождается после каждого этапа. Поэтому `import gigaam`, `pyannote`, `torch` и `numpy` — только
+внутри функций (и только в процессах-исполнителях: `speech_to_text_gigaam/worker.py`,
+`diarization/diarize_pyannote.py`), а остальные модули этих пакетов на верхнем уровне тяжёлого не
+импортируют. Так GUI-процесс не загружает `torch`, а тесты идут без нейросетей.
+
+Пакет `speech_to_text_gigaam`: вход — `transcribe.run()` (отдельного запуска из командной строки нет);
+`environment.py` — проверки окружения, `transcript.py` — сборка текста, `worker.py` — процесс GigaAM.
 
 ## Подводные камни
 
@@ -64,7 +68,8 @@ Python без GigaAM, и часть тестов молча пропуститс
 в `pyproject.toml` включён `--import-mode=importlib`, поэтому одинаковые имена файлов в разных
 папках допустимы, а `tests/common` не затеняет пакет `common`.
 CI: `.github/workflows/tests.yml` гоняет `pytest` на каждый push (Python 3.10 и 3.12), ставится только
-`pytest` — без GigaAM/torch, поэтому `tests/speech_to_text_gigaam` там пропускается (`skipped`), это ожидаемо.
+`pytest` — без GigaAM/torch. Пропущенных (`skipped`) тестов быть не должно: если тест требует тяжёлую
+зависимость, значит, тяжёлый импорт оказался не там (см. раздел выше).
 Новую чистую логику — с тестом. Не привязывать тесты к файлам пользователя (например, из `~/Movies`).
 
 ## Порядок работы

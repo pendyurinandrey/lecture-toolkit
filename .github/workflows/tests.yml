@@ -29,7 +29,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      # -rs печатает причины пропущенных тестов. Модуль
-      # tests/speech_to_text_gigaam пропускается: без gigaam его не импортировать.
+      # -rs печатает причины пропущенных тестов. Пропусков быть не должно: тестам не нужны
+      # ни gigaam, ни torch (тяжёлые импорты — только внутри функций процессов-исполнителей).
       - name: Run tests
         run: python -m pytest -rs
