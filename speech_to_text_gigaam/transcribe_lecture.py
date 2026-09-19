@@ -145,7 +145,7 @@ def run(audio_path, output_path=None, keep_fillers: bool = False, diarize: bool 
         raise FileNotFoundError(f"Файл не найден: {audio_path}")
     output_path = Path(output_path) if output_path else audio_path.with_suffix(".gigaam.txt")
 
-    log(f"Длительность: {format_timestamp(get_media_duration(audio_path))}")
+    log(f"Длительность видеофайла после обрезки и склейки: {format_timestamp(get_media_duration(audio_path))}")
 
     with tempfile.TemporaryDirectory(prefix="lecture_") as tmp_dir:
         wav_path = Path(tmp_dir) / "audio_16k.wav"
