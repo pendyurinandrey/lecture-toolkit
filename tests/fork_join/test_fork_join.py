@@ -3,6 +3,7 @@
 
 import pytest
 
+from common.ffmpeg import FFmpegError
 from fork_join import fork_join
 
 
@@ -132,19 +133,13 @@ class TestCommands:
         fake = FakeFfmpeg(monkeypatch)
 
         def missing():
-            raise fork_join.FFmpegError("Не найден ffmpeg в PATH")
+            raise FFmpegError("Не найден ffmpeg в PATH")
 
         monkeypatch.setattr(fork_join, "check_ffmpeg", missing)
         video = tmp_path / "in.mp4"
         video.write_bytes(b"")
         config = {"segments": [{"path": str(video), "fragments": [{"start": "00:00:00", "end": "00:00:10"}]}],
                   "output": {"videoPath": "o.mp4", "audioPath": "o.m4a"}}
-        with pytest.raises(fork_join.FFmpegError):
+        with pytest.raises(FFmpegError):
             fork_join.process_config(config)
         assert fake.calls == []                                     # до нарезки дело не дошло
-
-
-def test_fork_join_uses_the_shared_ffmpeg_error():
-    from common.ffmpeg import FFmpegError
-
-    assert fork_join.FFmpegError is FFmpegError

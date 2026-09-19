@@ -1,26 +1,19 @@
-#!/usr/bin/env python3
 """
-Нарезает фрагменты из MP4-файлов по конфигурации в JSON, склеивает их
-в единый MP4 и дополнительно сохраняет звуковую дорожку итогового файла
-в M4A — оба шага копированием потоков, без перекодирования, без потери
-качества.
+Нарезает фрагменты из MP4-файлов по конфигурации, склеивает их в единый
+MP4 и дополнительно сохраняет звуковую дорожку итогового файла в M4A —
+оба шага копированием потоков, без перекодирования, без потери качества.
 
 Формат конфигурации: см. README.md
 
-Использование:
-    python3 -m fork_join.fork_join path/to/config.json
-
-Модуль также предназначен для использования из pipeline_ui.py:
-функции validate_config()/process_config() бросают ConfigError/FFmpegError
-вместо завершения процесса, что позволяет UI перехватывать ошибки.
+Отдельного запуска из командной строки нет: модуль используется из
+pipeline_ui.py. Функции validate_config()/process_config() бросают
+ConfigError/FFmpegError, что позволяет UI показать ошибку пользователю.
 """
 
-import json
 import os
-import sys
 import tempfile
 
-from common.ffmpeg import FFmpegError, check_ffmpeg, run_ffmpeg
+from common.ffmpeg import check_ffmpeg, run_ffmpeg
 
 
 class ConfigError(ValueError):
@@ -79,20 +72,6 @@ def validate_config(config: dict) -> None:
     audio_path = output.get("audioPath")
     if not video_path or not audio_path:
         raise ConfigError('Поле "output" должно содержать "videoPath" и "audioPath"')
-
-
-def load_config(config_path: str) -> dict:
-    if not os.path.isfile(config_path):
-        raise ConfigError(f"Файл конфигурации не найден: {config_path}")
-
-    with open(config_path, "r", encoding="utf-8") as f:
-        try:
-            config = json.load(f)
-        except json.JSONDecodeError as e:
-            raise ConfigError(f"Ошибка разбора JSON в {config_path}: {e}") from e
-
-    validate_config(config)
-    return config
 
 
 def cut_fragment(source_path: str, start: str, end: str, out_path: str) -> None:
@@ -181,18 +160,3 @@ def process_config(config: dict, log=print) -> None:
         log("Извлекаю звуковую дорожку...")
         extract_audio(video_path, audio_path)
         log(f"Аудио сохранено: {audio_path}")
-
-
-def main() -> None:
-    if len(sys.argv) != 2:
-        sys.exit(f"Использование: {sys.argv[0]} <путь до config.json>")
-
-    try:
-        config = load_config(sys.argv[1])
-        process_config(config)
-    except (ConfigError, FFmpegError) as e:
-        sys.exit(str(e))
-
-
-if __name__ == "__main__":
-    main()
