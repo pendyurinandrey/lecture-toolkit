@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from common.silence import get_media_duration
+from common import ffmpeg
 from diarization import diarize_pyannote
 from fork_join import fork_join
 from ui.fragments_player import FragmentsPlayerDialog
@@ -334,7 +334,7 @@ class PipelineUI(QWidget):
         Возвращает True, если пользователь подтвердил изменения (OK)."""
         video_path = self.segments[seg_idx]["path"]
         try:
-            duration = get_media_duration(video_path)
+            duration = ffmpeg.get_media_duration(video_path)
         except Exception as e:  # noqa: BLE001 - показать пользователю любую ошибку ffprobe
             QMessageBox.critical(
                 self, "Не удалось открыть видео",
@@ -616,7 +616,7 @@ class PipelineUI(QWidget):
                     log(f"Speech-to-text завершён за {(time.time() - t0) / 60:.1f} мин.")
 
             self.done_signal.emit()
-        except (fork_join.ConfigError, fork_join.FFmpegError, EnvironmentCheckError,
+        except (fork_join.ConfigError, fork_join.FFmpegError, ffmpeg.FFmpegError, EnvironmentCheckError,
                 diarize_pyannote.DiarizationError) as e:
             self.error_signal.emit(str(e))
         except Exception as e:  # noqa: BLE001 - показать пользователю любую неожиданную ошибку

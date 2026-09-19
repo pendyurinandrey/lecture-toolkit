@@ -38,9 +38,8 @@ from collections import deque
 from itertools import groupby
 from pathlib import Path
 
-from common.audio import convert_to_wav_16k_mono
+from common.ffmpeg import convert_to_wav_16k_mono, get_media_duration
 from common.filler_words import remove_fillers
-from common.silence import get_media_duration
 from diarization import diarize_pyannote, speaker_labels
 from speech_to_text_gigaam.transcribe_longform import (
     MODEL_NAME,

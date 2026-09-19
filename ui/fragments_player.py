@@ -33,8 +33,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from common.keyframes import get_keyframe_timestamps, snap_intervals_to_keyframes
-from common.silence import detect_silences, keep_intervals_between_silences
+from common.ffmpeg import detect_silences, get_keyframe_timestamps
+from common.intervals import keep_intervals_between_silences, snap_intervals_to_keyframes
 from fork_join import fork_join
 
 
