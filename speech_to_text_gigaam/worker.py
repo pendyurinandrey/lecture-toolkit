@@ -9,6 +9,9 @@
 pyannote/segmentation-3.0) процесс получает от родителя через переменную
 окружения HF_TOKEN.
 
+Распознавание идёт на CPU, а VAD (нарезка на сегменты речи) — на MPS/CUDA, если
+они есть: на записи 3ч23м это 1 мин вместо 12-14 мин при тех же границах сегментов.
+
 Формат результата — JSON-список сегментов:
     [{"start": 1.2, "end": 9.8, "text": "...",
       "words": [{"text": "...", "start": 1.2, "end": 1.6}, ...]}, ...]
@@ -20,8 +23,35 @@ import json
 import time
 from pathlib import Path
 
+from common.device import pick_device, prepare_torch_environment
+
 BATCH_SIZE = 16  # fr_batch_size по умолчанию в GigaAM.transcribe_longform
 PROGRESS_STEP_PERCENT = 5
+
+
+def run_vad_on(device: str) -> None:
+    """Заставляет VAD GigaAM считаться на device ("mps"/"cuda") вместо устройства модели
+    распознавания (CPU). При "cpu" ничего не меняется. Если на ускорителе VAD упал
+    (нет операции на MPS, не хватило памяти CUDA), выводится предупреждение и VAD
+    повторяется на CPU — результат тот же, только медленнее."""
+    if device == "cpu":
+        return
+    try:
+        import torch
+        import gigaam.vad_utils as vad_utils
+        original_segment = vad_utils.segment_audio_file
+    except (ImportError, AttributeError):
+        return
+
+    def segment_on_accelerator(*args, **kwargs):
+        try:
+            return original_segment(*args, **{**kwargs, "device": torch.device(device)})
+        except Exception as e:  # noqa: BLE001 - любая ошибка ускорителя не должна ронять распознавание
+            print(f"Предупреждение: VAD на {device} не удался ({type(e).__name__}: {e}), "
+                  "повторяю на CPU (медленнее).", flush=True)
+            return original_segment(*args, **{**kwargs, "device": torch.device("cpu")})
+
+    vad_utils.segment_audio_file = segment_on_accelerator
 
 
 def install_progress_reporting(model, batch_size: int = BATCH_SIZE) -> None:
@@ -74,15 +104,18 @@ def segments_to_json(result, word_timestamps: bool) -> list:
 
 
 def transcribe_to_json(wav_path: Path, output_path: Path, model_name: str, word_timestamps: bool) -> None:
+    prepare_torch_environment()  # до первого import torch
     import gigaam
 
+    vad_device = pick_device()
     print(f"Аудио:  {wav_path}")
-    print(f"Модель: {model_name} (CPU)")
+    print(f"Модель: {model_name} (CPU), VAD: {vad_device.upper()}")
 
     t0 = time.time()
     model = gigaam.load_model(model_name, device="cpu", fp16_encoder=False)
     print(f"Модель загружена за {time.time() - t0:.1f} сек.", flush=True)
-    install_progress_reporting(model)
+    run_vad_on(vad_device)
+    install_progress_reporting(model)  # после run_vad_on: оборачивает уже подменённый VAD
 
     print("Начинаю транскрибацию (VAD-нарезка + распознавание)...", flush=True)
     t0 = time.time()

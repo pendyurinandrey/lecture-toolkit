@@ -26,10 +26,11 @@ torch и pyannote импортируются только внутри run().
 import argparse
 import json
 import os
-import sys
 import time
 import wave
 from pathlib import Path
+
+from common.device import pick_device, prepare_torch_environment
 
 MODEL_ID = "pyannote/speaker-diarization-community-1"
 MODEL_URL = f"https://huggingface.co/{MODEL_ID}"
@@ -76,16 +77,6 @@ def read_wav_16k_mono(path):
     return torch.from_numpy(samples).unsqueeze(0), rate
 
 
-def pick_device() -> str:
-    import torch
-
-    if torch.cuda.is_available():
-        return "cuda"
-    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
-
 class _ProgressLogger:
     """Хук прогресса pyannote: короткие строки вместо progress bar'ов."""
 
@@ -114,8 +105,7 @@ def run(wav_path, output_path, device=None, log=print) -> Path:
     check_model_available()
     # Модель уже проверена в кэше — сеть и токен не нужны.
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
-    if sys.platform == "darwin":
-        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    prepare_torch_environment()
 
     import warnings
     # pyannote предупреждает, что torchcodec не загрузился; нам он не нужен —
