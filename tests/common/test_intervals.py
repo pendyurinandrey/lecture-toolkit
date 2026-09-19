@@ -1,6 +1,13 @@
 """Чистая логика интервалов: ни ffmpeg, ни файлов не нужно."""
 
-from common.intervals import keep_intervals_between_silences, snap_intervals_to_keyframes
+import pytest
+
+from common.intervals import (
+    IntervalRangeError,
+    edit_interval,
+    keep_intervals_between_silences,
+    snap_intervals_to_keyframes,
+)
 
 
 class TestKeepIntervalsBetweenSilences:
@@ -98,3 +105,61 @@ class TestSnapIntervalsToKeyframes:
 
     def test_empty_intervals(self):
         assert self.snap([]) == []
+
+
+class TestEditInterval:
+    """Ручная правка полей «Начало»/«Конец» в диалоге фрагментов."""
+
+    DURATION = 12200.7   # 03:23:20.7 — в поле «Конец» показывается как 03:23:21
+
+    def test_editing_only_the_start_keeps_the_end_exact(self):
+        # ошибка из жизни: правка начала давала «Фрагмент должен быть в пределах…», потому что
+        # нетронутый конец разбирался как 03:23:21 = 12201 с > длительности 12200.7 с
+        result = edit_interval("00:10:00", "03:23:21", [0.0, self.DURATION], 0.0, self.DURATION)
+        assert result == [600.0, self.DURATION]
+
+    def test_typing_the_shown_end_explicitly_snaps_to_the_video_end(self):
+        assert edit_interval("00:00:00", "03:23:21", [600.0, 900.0], 0.0, self.DURATION) == [0.0, self.DURATION]
+
+    def test_start_equal_to_the_shown_boundary_of_the_previous_fragment_snaps_to_it(self):
+        # предыдущий фрагмент кончается на 100.4 (показан как 01:40), предел — 100.4, а не 100
+        assert edit_interval("00:01:40", "00:05:00", [150.0, 300.0], 100.4, 500.0) == [100.4, 300.0]
+
+    def test_end_equal_to_the_shown_start_of_the_next_fragment_snaps_to_it(self):
+        assert edit_interval("00:00:10", "00:08:21", [10.0, 300.0], 0.0, 500.6) == [10.0, 500.6]
+
+    def test_unchanged_fields_keep_fractions(self):
+        assert edit_interval("00:10:00", "00:20:00", [599.7, 1200.2], 0.0, 5000.0) == [599.7, 1200.2]
+
+    def test_ordinary_edit(self):
+        assert edit_interval("00:01:00", "00:02:30", [10.0, 20.0], 0.0, 500.0) == [60.0, 150.0]
+
+    def test_end_beyond_the_limit_is_rejected_with_the_limits_in_the_message(self):
+        with pytest.raises(IntervalRangeError, match="00:00:00–03:23:21"):
+            edit_interval("00:00:10", "03:23:22", [0.0, self.DURATION], 0.0, self.DURATION)
+
+    def test_start_before_the_limit_is_rejected(self):
+        with pytest.raises(IntervalRangeError):
+            edit_interval("00:01:00", "00:05:00", [150.0, 300.0], 100.4, 500.0)
+
+    @pytest.mark.parametrize("start, end", [("00:05:00", "00:05:00"), ("00:06:00", "00:05:00")])
+    def test_start_must_be_less_than_end(self, start, end):
+        with pytest.raises(IntervalRangeError, match="начало должно быть меньше конца"):
+            edit_interval(start, end, [10.0, 20.0], 0.0, 1000.0)
+
+    def test_wrong_time_format_is_a_plain_value_error_not_a_range_error(self):
+        with pytest.raises(ValueError) as info:
+            edit_interval("abc", "00:05:00", [10.0, 20.0], 0.0, 1000.0)
+        assert not isinstance(info.value, IntervalRangeError)
+        with pytest.raises(ValueError, match="ожидается HH:mm:ss") as info:
+            edit_interval("12:30", "00:05:00", [10.0, 20.0], 0.0, 1000.0)
+        assert not isinstance(info.value, IntervalRangeError)
+
+    def test_range_error_is_a_value_error(self):
+        assert issubclass(IntervalRangeError, ValueError)   # вызывающий код может ловить оба одним `except ValueError`
+
+    def test_input_list_is_not_mutated(self):
+        current = [10.0, 20.0]
+        edit_interval("00:00:15", "00:00:19", current, 0.0, 100.0)
+        assert current == [10.0, 20.0]
+

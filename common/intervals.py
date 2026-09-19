@@ -9,6 +9,30 @@
 
 import bisect
 
+from common.timecode import parse_displayed_time, seconds_to_hhmmss
+
+
+class IntervalRangeError(ValueError):
+    """Отредактированный фрагмент выходит за допустимые пределы или начало не меньше конца."""
+
+
+def edit_interval(start_text: str, end_text: str, current: list, lower: float, upper: float) -> list:
+    """Новые границы фрагмента после правки полей «Начало»/«Конец» (текст «ЧЧ:ММ:СС»).
+
+    current — прежние [начало, конец]; lower/upper — пределы: конец предыдущего фрагмента (или 0)
+    и начало следующего (или длительность видео). Поле, которое пользователь не менял, и
+    поле, равное показанной границе-пределу, сохраняют точное значение (см.
+    parse_displayed_time) — поэтому правка одного поля не портит другое из-за округления.
+    Бросает ValueError (неверный формат времени) или IntervalRangeError (вне пределов)."""
+    start = parse_displayed_time(start_text, current[0], lower)
+    end = parse_displayed_time(end_text, current[1], upper)
+    if not (lower <= start < end <= upper):
+        raise IntervalRangeError(
+            f"Фрагмент должен быть в пределах {seconds_to_hhmmss(lower)}–{seconds_to_hhmmss(upper)}, "
+            "и начало должно быть меньше конца."
+        )
+    return [start, end]
+
 
 def keep_intervals_between_silences(duration: float, silences: list, min_length: float = 1.0) -> list:
     """Возвращает интервалы МЕЖДУ паузами — то, что нужно сохранить, если

@@ -4,7 +4,13 @@ import random
 
 import pytest
 
-from common.timecode import format_duration, format_timestamp, hhmmss_to_seconds, seconds_to_hhmmss
+from common.timecode import (
+    format_duration,
+    format_timestamp,
+    hhmmss_to_seconds,
+    parse_displayed_time,
+    seconds_to_hhmmss,
+)
 
 
 class TestHhmmssToSeconds:
@@ -78,3 +84,39 @@ class TestFormatDuration:
     def test_short_stages_are_not_shown_as_fractions_of_a_minute(self):
         # раньше: «Fork/Join завершён за 0.2 мин.»
         assert format_duration(12.3) == "12 с"
+
+
+class TestParseDisplayedTime:
+    """Поле показывает значение с округлением; нетронутое поле не должно «съезжать»."""
+
+    def test_text_equal_to_the_displayed_value_returns_the_exact_value(self):
+        assert seconds_to_hhmmss(12200.7) == "03:23:21"
+        assert parse_displayed_time("03:23:21", 12200.7) == 12200.7    # а не 12201.0
+
+    def test_other_text_is_parsed_as_typed(self):
+        assert parse_displayed_time("00:10:00", 12200.7) == 600.0
+        assert parse_displayed_time("00:00:30.5", 12200.7) == 30.5
+
+    def test_text_may_match_any_of_the_known_values(self):
+        assert parse_displayed_time("00:03:21", 0.0, 200.6) == 200.6    # 200.6 показано как 03:21
+
+    def test_earlier_value_has_priority_when_several_match(self):
+        assert parse_displayed_time("00:01:40", 100.2, 99.7) == 100.2
+
+    def test_equivalent_spelling_of_the_same_time_matches_too(self):
+        assert parse_displayed_time("0:10:00", 599.7) == 599.7
+        assert parse_displayed_time(" 00:10:00 ", 599.7) == 599.7
+
+    def test_no_known_values(self):
+        assert parse_displayed_time("00:01:05") == 65.0
+
+    @pytest.mark.parametrize("text", ["12:30", "", "aa:bb:cc"])
+    def test_wrong_format_is_rejected(self, text):
+        with pytest.raises(ValueError):
+            parse_displayed_time(text, 1.0)
+
+    def test_what_is_shown_always_parses_back_to_the_value(self):
+        random.seed(5)
+        for x in (random.uniform(0, 20000) for _ in range(2000)):
+            assert parse_displayed_time(seconds_to_hhmmss(x), x) == x
+

@@ -30,6 +30,21 @@ def hhmmss_to_seconds(value: str) -> float:
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
+def parse_displayed_time(text: str, *shown_values: float) -> float:
+    """Разбирает время из поля ввода, в котором раньше было показано одно из shown_values.
+
+    Поле показывает значения с округлением до секунды: «03:23:21» на экране может означать
+    12200.7 с. Если введённое время — это то, как показано одно из shown_values, возвращается
+    само значение с дробной частью (приоритет у более раннего в списке). Иначе нетронутое поле
+    после разбора «съезжало» бы на долю секунды и, например, выходило за конец видео.
+    ValueError при неверном формате."""
+    parsed = hhmmss_to_seconds(text)
+    for value in shown_values:
+        if parsed == _round_half_up(value):
+            return value
+    return parsed
+
+
 def seconds_to_hhmmss(seconds: float) -> str:
     """Секунды -> «ЧЧ:ММ:СС», округление до ближайшей секунды (см. описание модуля)."""
     return _hhmmss(_round_half_up(seconds))

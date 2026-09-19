@@ -34,7 +34,12 @@ from PySide6.QtWidgets import (
 )
 
 from common.ffmpeg import detect_silences, get_keyframe_timestamps
-from common.intervals import keep_intervals_between_silences, snap_intervals_to_keyframes
+from common.intervals import (
+    IntervalRangeError,
+    edit_interval,
+    keep_intervals_between_silences,
+    snap_intervals_to_keyframes,
+)
 from common.timecode import hhmmss_to_seconds, seconds_to_hhmmss
 
 
@@ -487,29 +492,26 @@ class FragmentsPlayerDialog(QDialog):
         if len(self.timeline.selected) != 1:
             return
         idx = self.timeline.selected[0]
-        try:
-            start_s = hhmmss_to_seconds(self.start_edit.text())
-            end_s = hhmmss_to_seconds(self.end_edit.text())
-        except ValueError as e:
-            _centered_message_box(self, QMessageBox.Icon.Critical, "Некорректное время", str(e))
-            self._refresh_numeric_fields()
-            return
         lower = self.timeline.intervals[idx - 1][1] if idx > 0 else 0.0
         upper = (
             self.timeline.intervals[idx + 1][0]
             if idx + 1 < len(self.timeline.intervals)
             else self.duration
         )
-        if not (lower <= start_s < end_s <= upper):
-            _centered_message_box(
-                self, QMessageBox.Icon.Critical, "Некорректный диапазон",
-                f"Фрагмент должен быть в пределах {seconds_to_hhmmss(lower)}"
-                f"–{seconds_to_hhmmss(upper)}, и начало должно быть меньше конца.",
+        try:
+            self.timeline.intervals[idx] = edit_interval(
+                self.start_edit.text(), self.end_edit.text(), self.timeline.intervals[idx], lower, upper,
             )
+        except IntervalRangeError as e:
+            _centered_message_box(self, QMessageBox.Icon.Critical, "Некорректный диапазон", str(e))
             self._refresh_numeric_fields()
             return
-        self.timeline.intervals[idx] = [start_s, end_s]
+        except ValueError as e:
+            _centered_message_box(self, QMessageBox.Icon.Critical, "Некорректное время", str(e))
+            self._refresh_numeric_fields()
+            return
         self.timeline.update()
+        self.timeline.intervalsChanged.emit()  # обновить список фрагментов под таймлайном
 
     def _on_add_fragment(self) -> None:
         idx = self.timeline.add_interval_near(self.timeline.playhead)
