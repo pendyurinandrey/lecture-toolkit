@@ -14,25 +14,11 @@ import os
 import tempfile
 
 from common.ffmpeg import check_ffmpeg, run_ffmpeg
+from common.timecode import hhmmss_to_seconds
 
 
 class ConfigError(ValueError):
     """Некорректная конфигурация fork_join."""
-
-
-def hhmmss_to_seconds(value: str) -> float:
-    parts = value.strip().split(":")
-    if len(parts) != 3:
-        raise ValueError(f"Неверный формат времени (ожидается HH:mm:ss): {value!r}")
-    hours, minutes, seconds = parts
-    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
-
-
-def seconds_to_hhmmss(value: float) -> str:
-    total = round(value)
-    hours, remainder = divmod(total, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def validate_config(config: dict) -> None:

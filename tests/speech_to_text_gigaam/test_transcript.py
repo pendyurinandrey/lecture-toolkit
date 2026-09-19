@@ -3,7 +3,6 @@
 import pytest
 
 from speech_to_text_gigaam.transcript import (
-    format_timestamp,
     group_into_sentence_paragraphs,
     plain_paragraphs,
     speaker_paragraphs,
@@ -17,13 +16,6 @@ def word(start, end, text):
 
 def turn(start, end, speaker):
     return {"start": start, "end": end, "speaker": speaker}
-
-
-@pytest.mark.parametrize("seconds, expected", [
-    (0, "00:00:00"), (59.9, "00:00:59"), (61, "00:01:01"), (3661.5, "01:01:01"), (11389.66, "03:09:49"),
-])
-def test_format_timestamp_truncates_fractions(seconds, expected):
-    assert format_timestamp(seconds) == expected
 
 
 class TestGroupIntoSentenceParagraphs:
@@ -126,6 +118,14 @@ class TestWriteTranscript:
             "[00:00:00] Привет.\n\n"
             "[00:01:05] Пока.\n\n"
         )
+
+    def test_paragraph_times_are_truncated_not_rounded(self, tmp_path):
+        # метка «когда начинается речь» не должна указывать позже самой речи
+        out = tmp_path / "t.txt"
+        write_transcript(out, "a.m4a", [(59.7, "Раз."), (65.9, "Два."), (3599.99, "Три.")], "m",
+                         keep_fillers=True, diarize=False)
+        lines = out.read_text(encoding="utf-8").splitlines()
+        assert "[00:00:59] Раз." in lines and "[00:01:05] Два." in lines and "[00:59:59] Три." in lines
 
     def test_fillers_kept_header(self, tmp_path):
         out = tmp_path / "t.txt"

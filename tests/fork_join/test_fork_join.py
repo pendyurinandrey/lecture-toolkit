@@ -7,22 +7,6 @@ from common.ffmpeg import FFmpegError
 from fork_join import fork_join
 
 
-class TestTimeConversion:
-    def test_hhmmss_to_seconds(self):
-        assert fork_join.hhmmss_to_seconds("01:02:03") == 3723
-        assert fork_join.hhmmss_to_seconds(" 00:00:30.5 ") == 30.5
-
-    @pytest.mark.parametrize("value", ["12:30", "1:2:3:4", ""])
-    def test_wrong_format_is_rejected(self, value):
-        with pytest.raises(ValueError):
-            fork_join.hhmmss_to_seconds(value)
-
-    def test_seconds_to_hhmmss_rounds_to_nearest_second(self):
-        assert fork_join.seconds_to_hhmmss(3723) == "01:02:03"
-        assert fork_join.seconds_to_hhmmss(11389.66) == "03:09:50"
-        assert fork_join.seconds_to_hhmmss(0.4) == "00:00:00"
-
-
 class TestValidateConfig:
     @pytest.fixture
     def video(self, tmp_path):

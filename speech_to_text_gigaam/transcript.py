@@ -14,17 +14,11 @@ from itertools import groupby
 from pathlib import Path
 
 from common.filler_words import remove_fillers
+from common.timecode import format_timestamp
 from diarization import diarize_pyannote, speaker_labels
 
 SENTENCE_END_CHARS = ".?!"
 PARAGRAPH_TARGET_CHARS = 500
-
-
-def format_timestamp(seconds: float) -> str:
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    return f"{h:02d}:{m:02d}:{s:02d}"
 
 
 def group_into_sentence_paragraphs(word_ts_pairs, target_chars=PARAGRAPH_TARGET_CHARS):

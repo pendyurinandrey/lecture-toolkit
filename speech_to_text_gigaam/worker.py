@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 from common.device import pick_device, prepare_torch_environment
+from common.timecode import format_duration
 
 BATCH_SIZE = 16  # fr_batch_size по умолчанию в GigaAM.transcribe_longform
 PROGRESS_STEP_PERCENT = 5
@@ -72,7 +73,7 @@ def install_progress_reporting(model, batch_size: int = BATCH_SIZE) -> None:
         t0 = time.time()
         segments, boundaries = original_segment(*args, **kwargs)
         state["total"] = -(-len(segments) // batch_size)
-        print(f"VAD завершён за {(time.time() - t0) / 60:.1f} мин, сегментов речи: {len(segments)}", flush=True)
+        print(f"VAD завершён за {format_duration(time.time() - t0)}, сегментов речи: {len(segments)}", flush=True)
         return segments, boundaries
 
     original_forward = model.forward
@@ -113,14 +114,14 @@ def transcribe_to_json(wav_path: Path, output_path: Path, model_name: str, word_
 
     t0 = time.time()
     model = gigaam.load_model(model_name, device="cpu", fp16_encoder=False)
-    print(f"Модель загружена за {time.time() - t0:.1f} сек.", flush=True)
+    print(f"Модель загружена за {format_duration(time.time() - t0)}.", flush=True)
     run_vad_on(vad_device)
     install_progress_reporting(model)  # после run_vad_on: оборачивает уже подменённый VAD
 
     print("Начинаю транскрибацию (VAD-нарезка + распознавание)...", flush=True)
     t0 = time.time()
     result = model.transcribe_longform(str(wav_path), word_timestamps=word_timestamps)
-    print(f"Транскрибация завершена за {(time.time() - t0) / 60:.1f} мин. Сегментов: {len(result)}", flush=True)
+    print(f"Транскрибация завершена за {format_duration(time.time() - t0)}. Сегментов: {len(result)}", flush=True)
 
     Path(output_path).write_text(
         json.dumps(segments_to_json(result, word_timestamps), ensure_ascii=False, indent=2), encoding="utf-8",

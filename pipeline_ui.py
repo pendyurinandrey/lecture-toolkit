@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
 )
 
 from common import ffmpeg
+from common.timecode import format_duration, hhmmss_to_seconds
 from diarization import diarize_pyannote
 from fork_join import fork_join
 from ui.fragments_player import FragmentsPlayerDialog
@@ -99,8 +100,8 @@ class FragmentDialog(QDialog):
         start = self.start_edit.text().strip()
         end = self.end_edit.text().strip()
         try:
-            start_s = fork_join.hhmmss_to_seconds(start)
-            end_s = fork_join.hhmmss_to_seconds(end)
+            start_s = hhmmss_to_seconds(start)
+            end_s = hhmmss_to_seconds(end)
         except ValueError as e:
             QMessageBox.critical(self, "Некорректное время", str(e))
             return
@@ -602,7 +603,7 @@ class PipelineUI(QWidget):
 
                 t0 = time.time()
                 fork_join.process_config(config, log=log)
-                log(f"Fork/Join завершён за {(time.time() - t0) / 60:.1f} мин.")
+                log(f"Fork/Join завершён за {format_duration(time.time() - t0)}.")
 
                 if run_speech2text:
                     t0 = time.time()
@@ -613,7 +614,7 @@ class PipelineUI(QWidget):
                         diarize=diarize,
                         log=log,
                     )
-                    log(f"Speech-to-text завершён за {(time.time() - t0) / 60:.1f} мин.")
+                    log(f"Speech-to-text завершён за {format_duration(time.time() - t0)}.")
 
             self.done_signal.emit()
         except (fork_join.ConfigError, ffmpeg.FFmpegError, EnvironmentCheckError,

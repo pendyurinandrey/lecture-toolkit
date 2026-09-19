@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 
 from common.ffmpeg import detect_silences, get_keyframe_timestamps
 from common.intervals import keep_intervals_between_silences, snap_intervals_to_keyframes
-from fork_join import fork_join
+from common.timecode import hhmmss_to_seconds, seconds_to_hhmmss
 
 
 class _CenteredMessageBox(QMessageBox):
@@ -256,7 +256,7 @@ class FragmentsPlayerDialog(QDialog):
         self.finished.connect(lambda _: self.media_player.stop())
 
         initial = [
-            [fork_join.hhmmss_to_seconds(f["start"]), fork_join.hhmmss_to_seconds(f["end"])]
+            [hhmmss_to_seconds(f["start"]), hhmmss_to_seconds(f["end"])]
             for f in fragments
         ] or [[0.0, self.duration]]
         self.timeline.set_intervals(initial)
@@ -288,7 +288,7 @@ class FragmentsPlayerDialog(QDialog):
         fwd5_btn.clicked.connect(lambda: self._seek_relative(5))
         controls.addWidget(fwd5_btn)
         controls.addStretch()
-        self.position_label = QLabel(f"00:00:00 / {fork_join.seconds_to_hhmmss(self.duration)}")
+        self.position_label = QLabel(f"00:00:00 / {seconds_to_hhmmss(self.duration)}")
         controls.addWidget(self.position_label)
         layout.addLayout(controls)
 
@@ -425,8 +425,8 @@ class FragmentsPlayerDialog(QDialog):
     def _on_player_position_changed(self, position_ms: int) -> None:
         self.position_slider.setValue(position_ms)
         self.timeline.set_playhead(position_ms / 1000.0)
-        current = fork_join.seconds_to_hhmmss(position_ms / 1000.0)
-        total = fork_join.seconds_to_hhmmss(self.duration)
+        current = seconds_to_hhmmss(position_ms / 1000.0)
+        total = seconds_to_hhmmss(self.duration)
         self.position_label.setText(f"{current} / {total}")
 
     # ------------------------------------------------------------ fragments
@@ -436,7 +436,7 @@ class FragmentsPlayerDialog(QDialog):
         self.fragment_list.clear()
         for i, (s, e) in enumerate(self.timeline.intervals):
             self.fragment_list.addItem(
-                f"{i + 1}. {fork_join.seconds_to_hhmmss(s)}–{fork_join.seconds_to_hhmmss(e)}"
+                f"{i + 1}. {seconds_to_hhmmss(s)}–{seconds_to_hhmmss(e)}"
             )
         self.fragment_list.blockSignals(False)
         self._sync_list_selection(self.timeline.selected)
@@ -479,17 +479,17 @@ class FragmentsPlayerDialog(QDialog):
         self.end_edit.setEnabled(True)
         s, e = self.timeline.intervals[idx]
         if not self.start_edit.hasFocus():
-            self.start_edit.setText(fork_join.seconds_to_hhmmss(s))
+            self.start_edit.setText(seconds_to_hhmmss(s))
         if not self.end_edit.hasFocus():
-            self.end_edit.setText(fork_join.seconds_to_hhmmss(e))
+            self.end_edit.setText(seconds_to_hhmmss(e))
 
     def _on_numeric_edit(self) -> None:
         if len(self.timeline.selected) != 1:
             return
         idx = self.timeline.selected[0]
         try:
-            start_s = fork_join.hhmmss_to_seconds(self.start_edit.text())
-            end_s = fork_join.hhmmss_to_seconds(self.end_edit.text())
+            start_s = hhmmss_to_seconds(self.start_edit.text())
+            end_s = hhmmss_to_seconds(self.end_edit.text())
         except ValueError as e:
             _centered_message_box(self, QMessageBox.Icon.Critical, "Некорректное время", str(e))
             self._refresh_numeric_fields()
@@ -503,8 +503,8 @@ class FragmentsPlayerDialog(QDialog):
         if not (lower <= start_s < end_s <= upper):
             _centered_message_box(
                 self, QMessageBox.Icon.Critical, "Некорректный диапазон",
-                f"Фрагмент должен быть в пределах {fork_join.seconds_to_hhmmss(lower)}"
-                f"–{fork_join.seconds_to_hhmmss(upper)}, и начало должно быть меньше конца.",
+                f"Фрагмент должен быть в пределах {seconds_to_hhmmss(lower)}"
+                f"–{seconds_to_hhmmss(upper)}, и начало должно быть меньше конца.",
             )
             self._refresh_numeric_fields()
             return
@@ -571,7 +571,7 @@ class FragmentsPlayerDialog(QDialog):
             )
             return
         self.result_fragments = [
-            {"start": fork_join.seconds_to_hhmmss(s), "end": fork_join.seconds_to_hhmmss(e)}
+            {"start": seconds_to_hhmmss(s), "end": seconds_to_hhmmss(e)}
             for s, e in self.timeline.intervals
         ]
         self.accept()

@@ -31,6 +31,7 @@ import wave
 from pathlib import Path
 
 from common.device import pick_device, prepare_torch_environment
+from common.timecode import format_duration
 
 MODEL_ID = "pyannote/speaker-diarization-community-1"
 MODEL_URL = f"https://huggingface.co/{MODEL_ID}"
@@ -122,7 +123,7 @@ def run(wav_path, output_path, device=None, log=print) -> Path:
     t0 = time.time()
     waveform, rate = read_wav_16k_mono(wav_path)
     duration = waveform.shape[1] / rate
-    log(f"Диаризация: {duration / 60:.1f} мин аудио, устройство: {device}")
+    log(f"Диаризация: {format_duration(duration)} аудио, устройство: {device}")
 
     pipeline = Pipeline.from_pretrained(MODEL_ID)
     pipeline.to(torch.device(device))
@@ -141,7 +142,7 @@ def run(wav_path, output_path, device=None, log=print) -> Path:
         "turns": turns,
     }
     output_path.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
-    log(f"Диаризация завершена за {(time.time() - t0) / 60:.1f} мин: "
+    log(f"Диаризация завершена за {format_duration(time.time() - t0)}: "
         f"спикеров {result['speakers']}, реплик {len(turns)}. Файл: {output_path}")
     return output_path
 
