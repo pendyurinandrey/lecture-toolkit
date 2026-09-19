@@ -48,9 +48,10 @@ from PySide6.QtWidgets import (
 )
 
 from common.silence import get_media_duration
+from diarization import diarize_pyannote
 from fork_join import fork_join
 from ui.fragments_player import FragmentsPlayerDialog
-from speech_to_text_gigaam import transcribe_longform_chunked
+from speech_to_text_gigaam import transcribe_lecture
 from speech_to_text_gigaam.transcribe_longform import (
     EnvironmentCheckError,
     check_ffmpeg_compatibility,
@@ -247,6 +248,13 @@ class PipelineUI(QWidget):
         self.remove_fillers_check.setChecked(True)
         s2t_layout.addWidget(self.remove_fillers_check, 2, 0, 1, 3)
 
+        self.diarize_check = QCheckBox("Определять говорящих (медленнее)")
+        self.diarize_check.setToolTip(
+            "Реплики помечаются «Спикер 1», «Спикер 2»… по порядку появления в записи.\n"
+            "Без видеокарты NVIDIA (CUDA) или Apple Silicon (MPS) работает очень медленно."
+        )
+        s2t_layout.addWidget(self.diarize_check, 3, 0, 1, 3)
+
         layout.addWidget(s2t_group)
 
         # --------------------------------------------------------- прочее
@@ -281,6 +289,7 @@ class PipelineUI(QWidget):
         self.transcript_path_edit.setEnabled(checked)
         self.transcript_browse_btn.setEnabled(checked)
         self.remove_fillers_check.setEnabled(checked)
+        self.diarize_check.setEnabled(checked)
 
     # --------------------------------------------------------------- state
 
@@ -525,6 +534,7 @@ class PipelineUI(QWidget):
         run_speech2text = self.speech2text_check.isChecked()
         transcript_path = self.transcript_path_edit.text().strip()
         remove_fillers = self.remove_fillers_check.isChecked()
+        diarize = run_speech2text and self.diarize_check.isChecked()
         keep_awake = self.keep_awake_check.isChecked()
 
         if run_speech2text:
@@ -537,7 +547,9 @@ class PipelineUI(QWidget):
             try:
                 check_ffmpeg_compatibility()
                 ensure_hf_token()
-            except EnvironmentCheckError as e:
+                if diarize:
+                    diarize_pyannote.check_model_available()
+            except (EnvironmentCheckError, diarize_pyannote.DiarizationError) as e:
                 QMessageBox.critical(self, "Окружение не готово", str(e))
                 return
 
@@ -546,6 +558,11 @@ class PipelineUI(QWidget):
         check_paths = [video_path, audio_path]
         if run_speech2text:
             check_paths.append(transcript_path)
+        if diarize:
+            check_paths += [
+                str(transcribe_lecture.diarization_path(transcript_path)),
+                str(transcribe_lecture.words_path(transcript_path)),
+            ]
         existing = [p for p in check_paths if p and os.path.exists(p)]
         if existing:
             names = "\n".join(existing)
@@ -563,12 +580,12 @@ class PipelineUI(QWidget):
 
         self.worker_thread = threading.Thread(
             target=self._worker,
-            args=(config, run_speech2text, transcript_path, remove_fillers, keep_awake),
+            args=(config, run_speech2text, transcript_path, remove_fillers, diarize, keep_awake),
             daemon=True,
         )
         self.worker_thread.start()
 
-    def _worker(self, config, run_speech2text, transcript_path, remove_fillers, keep_awake):
+    def _worker(self, config, run_speech2text, transcript_path, remove_fillers, diarize, keep_awake):
         log = lambda msg: self.log_signal.emit(msg)  # noqa: E731
 
         if keep_awake:
@@ -589,16 +606,18 @@ class PipelineUI(QWidget):
 
                 if run_speech2text:
                     t0 = time.time()
-                    transcribe_longform_chunked.run(
+                    transcribe_lecture.run(
                         config["output"]["audioPath"],
                         transcript_path,
                         keep_fillers=not remove_fillers,
+                        diarize=diarize,
                         log=log,
                     )
                     log(f"Speech-to-text завершён за {(time.time() - t0) / 60:.1f} мин.")
 
             self.done_signal.emit()
-        except (fork_join.ConfigError, fork_join.FFmpegError, EnvironmentCheckError) as e:
+        except (fork_join.ConfigError, fork_join.FFmpegError, EnvironmentCheckError,
+                diarize_pyannote.DiarizationError) as e:
             self.error_signal.emit(str(e))
         except Exception as e:  # noqa: BLE001 - показать пользователю любую неожиданную ошибку
             self.error_signal.emit(f"Непредвиденная ошибка: {e}")

@@ -31,6 +31,8 @@ from pathlib import Path
 import gigaam
 
 MODEL_NAME = "v3_e2e_rnnt"
+BATCH_SIZE = 16  # fr_batch_size по умолчанию в GigaAM.transcribe_longform
+PROGRESS_STEP_PERCENT = 5
 SENTENCE_END_CHARS = ".?!"
 PARAGRAPH_TARGET_CHARS = 500
 FFMPEG_MIN_SUPPORTED = 4
@@ -138,11 +140,54 @@ def group_into_sentence_paragraphs(word_ts_pairs, target_chars=PARAGRAPH_TARGET_
     return paragraphs
 
 
+def install_progress_reporting(model, batch_size: int = BATCH_SIZE) -> None:
+    """Печатает прогресс распознавания: число батчей заранее неизвестно,
+    пока VAD не нарежет файл, поэтому перехватываем и VAD-этап, и forward()
+    модели. Если внутреннее устройство GigaAM изменится, прогресс просто
+    не будет выводиться — на результат это не влияет."""
+    try:
+        import gigaam.vad_utils as vad_utils
+        original_segment = vad_utils.segment_audio_file
+    except (ImportError, AttributeError):
+        return
+
+    state = {"total": 0, "done": 0, "bucket": -1}
+
+    def segment_with_report(*args, **kwargs):
+        print("Нарезка на сегменты речи (VAD)...", flush=True)
+        t0 = time.time()
+        segments, boundaries = original_segment(*args, **kwargs)
+        state["total"] = -(-len(segments) // batch_size)
+        print(f"VAD завершён за {(time.time() - t0) / 60:.1f} мин, сегментов речи: {len(segments)}", flush=True)
+        return segments, boundaries
+
+    original_forward = model.forward
+
+    def forward_with_report(*args, **kwargs):
+        result = original_forward(*args, **kwargs)
+        state["done"] += 1
+        if state["total"]:
+            bucket = 100 * state["done"] // state["total"] // PROGRESS_STEP_PERCENT
+            if bucket > state["bucket"]:
+                state["bucket"] = bucket
+                print(f"Распознавание: {min(bucket * PROGRESS_STEP_PERCENT, 100)}% "
+                      f"(пачка {state['done']}/{state['total']})", flush=True)
+        return result
+
+    vad_utils.segment_audio_file = segment_with_report
+    model.forward = forward_with_report
+
+
 def main():
     parser = argparse.ArgumentParser(description="Транскрибация аудио через GigaAM-v3 (longform)")
     parser.add_argument("audio", type=Path, help="Путь к аудиофайлу")
     parser.add_argument("--output", type=Path, default=None, help="Путь к итоговому .txt")
     parser.add_argument("--save-json", action="store_true", help="Сохранить сырые VAD-сегменты в .json рядом с .txt")
+    parser.add_argument("--json-only", action="store_true",
+                        help="Только сырые сегменты в .json (как --save-json), без итогового .txt; "
+                             "используется из transcribe_lecture.py")
+    parser.add_argument("--word-timestamps", action="store_true",
+                        help="Точные таймкоды слов; попадают в .json (нужен --save-json). Медленнее")
     args = parser.parse_args()
 
     try:
@@ -162,19 +207,27 @@ def main():
 
     t0 = time.time()
     model = gigaam.load_model(MODEL_NAME, device="cpu", fp16_encoder=False)
-    print(f"Модель загружена за {time.time() - t0:.1f} сек.")
+    print(f"Модель загружена за {time.time() - t0:.1f} сек.", flush=True)
+    install_progress_reporting(model)
 
-    print("Начинаю транскрибацию (VAD-нарезка + распознавание)...")
+    print("Начинаю транскрибацию (VAD-нарезка + распознавание)...", flush=True)
     t0 = time.time()
-    result = model.transcribe_longform(str(audio_path))
+    result = model.transcribe_longform(str(audio_path), word_timestamps=args.word_timestamps)
     elapsed = time.time() - t0
     print(f"Транскрибация завершена за {elapsed / 60:.1f} мин. Сегментов: {len(result)}")
 
-    if args.save_json:
+    if args.save_json or args.json_only:
         json_path = output_path.with_suffix(".json")
-        raw_segments = [{"start": s.start, "end": s.end, "text": s.text} for s in result]
+        raw_segments = []
+        for s in result:
+            raw = {"start": s.start, "end": s.end, "text": s.text}
+            if args.word_timestamps:
+                raw["words"] = [{"text": w.text, "start": w.start, "end": w.end} for w in s.words or []]
+            raw_segments.append(raw)
         json_path.write_text(json.dumps(raw_segments, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"Сырые сегменты сохранены: {json_path}")
+        if args.json_only:
+            return
 
     word_ts = []
     for segment in result:
