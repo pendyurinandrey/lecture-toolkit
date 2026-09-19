@@ -7,5 +7,15 @@ name = "lecture-toolkit"
 version = "0.1.0"
 requires-python = ">=3.10"
 
+[project.optional-dependencies]
+dev = ["pytest"]
+
 [tool.setuptools.packages.find]
 include = ["fork_join", "common", "ui", "diarization", "speech_to_text_whisper", "speech_to_text_gigaam"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# importlib: тесты в разных папках могут называться одинаково (tests/common/test_x.py и
+# tests/diarization/test_x.py), а папка tests/common не затеняет пакет common
+addopts = ["--import-mode=importlib"]
