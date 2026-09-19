@@ -1,0 +1,35 @@
+name: Tests
+
+on:
+  push:
+  workflow_dispatch:  # ручной запуск: вкладка Actions -> Tests -> Run workflow
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 — минимальная поддерживаемая версия (requires-python в pyproject.toml)
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Только pytest (см. [project.optional-dependencies] в pyproject.toml): тяжёлые
+      # зависимости — GigaAM, torch, PySide6 — не ставятся, тестам они не нужны.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      # -rs печатает причины пропущенных тестов. Модуль
+      # tests/speech_to_text_gigaam пропускается: без gigaam его не импортировать.
+      - name: Run tests
+        run: python -m pytest -rs

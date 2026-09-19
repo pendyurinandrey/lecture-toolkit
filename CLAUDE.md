@@ -63,6 +63,8 @@ Python без GigaAM, и часть тестов молча пропуститс
 (например, `common/ffmpeg.py` → `tests/common/test_ffmpeg.py`). `__init__.py` в `tests/` не нужны:
 в `pyproject.toml` включён `--import-mode=importlib`, поэтому одинаковые имена файлов в разных
 папках допустимы, а `tests/common` не затеняет пакет `common`.
+CI: `.github/workflows/tests.yml` гоняет `pytest` на каждый push (Python 3.10 и 3.12), ставится только
+`pytest` — без GigaAM/torch, поэтому `tests/speech_to_text_gigaam` там пропускается (`skipped`), это ожидаемо.
 Новую чистую логику — с тестом. Не привязывать тесты к файлам пользователя (например, из `~/Movies`).
 
 ## Порядок работы

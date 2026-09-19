@@ -323,6 +323,8 @@ python3 -m pytest
 
 Команды выполняются в терминале с активированной Virtual Environment проекта. Тесты нужно запускать именно как `python3 -m pytest`, а не просто `pytest`: так берётся интерпретатор из venv, тогда как голый `pytest` может запуститься из системного Python, где нет GigaAM, — тогда часть тестов будет пропущена (`skipped`).
 
+При каждом `push` тесты автоматически запускает GitHub Actions ([.github/workflows/tests.yml](.github/workflows/tests.yml)) на Python 3.10 и 3.12. Результат виден на вкладке Actions репозитория. Там ставится только `pytest`, без GigaAM и `torch`, поэтому тесты сборки транскрипта (`tests/speech_to_text_gigaam`) на GitHub пропускаются — это ожидаемо.
+
 ## FAQ
 
 ### Что делать если версия ffmpeg 9+?
