@@ -242,8 +242,7 @@ cd ..
 "Определять говорящих (медленнее)" в `pipeline_ui.py` или флагом `--diarize`.
 
 * `diarize_pyannote.py` — движок [pyannote community-1](https://huggingface.co/pyannote/speaker-diarization-community-1);
-  можно запускать отдельно: `python -m diarization.diarize_pyannote lecture.wav --output lecture.diarization.json`
-  (нужен WAV 16 кГц моно PCM16).
+  запускается отдельным процессом на WAV 16 кГц моно PCM16.
 * `speaker_labels.py` — склейка слов транскрипта с репликами говорящих; не зависит от
   конкретного движка диаризации.
 

@@ -24,11 +24,12 @@ login`, если уже не задан явно; для ffmpeg просто в�
 import argparse
 import json
 import os
-import subprocess
 import time
 from pathlib import Path
 
 import gigaam
+
+from common.ffmpeg import FFmpegError, get_ffmpeg_major_version
 
 MODEL_NAME = "v3_e2e_rnnt"
 BATCH_SIZE = 16  # fr_batch_size по умолчанию в GigaAM.transcribe_longform
@@ -51,12 +52,8 @@ def check_ffmpeg_compatibility() -> None:
         return  # пользователь уже настроил сам (macOS/Linux) — доверяем
 
     try:
-        out = subprocess.run(
-            ["ffmpeg", "-version"], capture_output=True, text=True, check=True, timeout=10,
-        ).stdout
-        # Формат первой строки: "ffmpeg version 9.0.1 Copyright (c) ..."
-        major = int(out.split()[2].split(".")[0])
-    except Exception:
+        major = get_ffmpeg_major_version()
+    except FFmpegError:
         return  # версию не удалось однозначно определить — не блокируем запуск
 
     if FFMPEG_MIN_SUPPORTED <= major <= FFMPEG_MAX_SUPPORTED:

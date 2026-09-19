@@ -16,6 +16,9 @@ from pathlib import Path
 SILENCE_NOISE_DB = "-30dB"
 WAV_SAMPLE_RATE = 16000
 _ERROR_TAIL_LINES = 15
+# «ffmpeg version 9.0.1», «ffmpeg version n7.1», «ffmpeg version 4.4.2-0ubuntu0.22.04.1».
+# Точка после мажорной версии обязательна: git-сборки («N-118000-g…», «2024-05-06-git-…») версию не несут.
+_VERSION_RE = re.compile(r"ffmpeg version n?(\d+)\.\d")
 
 
 class FFmpegError(RuntimeError):
@@ -32,13 +35,18 @@ def check_ffmpeg() -> None:
         raise _not_found("ffmpeg")
 
 
-def _run(command: list, action: str) -> subprocess.CompletedProcess:
+def _run(command: list, action: str, timeout: float = None) -> subprocess.CompletedProcess:
     """Запускает команду, возвращает результат с захваченными stdout/stderr.
-    Бросает FFmpegError, если программа не найдена или код возврата не нулевой."""
+    Бросает FFmpegError, если программа не найдена, не уложилась в timeout секунд
+    или код возврата не нулевой."""
     try:
-        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        result = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+        )
     except FileNotFoundError as e:
         raise _not_found(command[0]) from e
+    except subprocess.TimeoutExpired as e:
+        raise FFmpegError(f"{action}: {command[0]} не ответил за {timeout} с") from e
     if result.returncode != 0:
         tail = "\n".join(result.stderr.strip().splitlines()[-_ERROR_TAIL_LINES:])
         raise FFmpegError(f"{action}: {command[0]} завершился с ошибкой:\n{tail}")
@@ -49,6 +57,19 @@ def run_ffmpeg(args: list, action: str = "Не удалось выполнить
     """Запускает ffmpeg с переданными аргументами (перезаписывает выходной файл,
     показывает только ошибки). action — что делали: попадёт в текст ошибки."""
     _run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *args], action)
+
+
+def get_ffmpeg_major_version() -> int:
+    """Мажорная версия установленного ffmpeg (9 для «ffmpeg version 9.0.1»).
+    Бросает FFmpegError, если ffmpeg не найден или версию не удалось разобрать
+    (например, git-сборка)."""
+    action = "Не удалось определить версию ffmpeg"
+    result = _run(["ffmpeg", "-version"], action, timeout=10)
+    match = _VERSION_RE.search(result.stdout)
+    if match is None:
+        first_line = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+        raise FFmpegError(f"{action}: {first_line!r}")
+    return int(match.group(1))
 
 
 def get_media_duration(path) -> float:

@@ -78,6 +78,53 @@ class TestRunFfmpeg:
             ffmpeg.run_ffmpeg(["-i", "x"])
 
 
+class TestGetFfmpegMajorVersion:
+    @pytest.mark.parametrize("first_line, expected", [
+        ("ffmpeg version 9.0.1 Copyright (c) 2000-2026 the FFmpeg developers", 9),
+        ("ffmpeg version 8.0 Copyright (c) 2000-2025 the FFmpeg developers", 8),
+        ("ffmpeg version 10.1.2 Copyright (c) 2000-2027 the FFmpeg developers", 10),
+        ("ffmpeg version n12.0 Copyright (c) 2000-2029 the FFmpeg developers", 12),
+        ("ffmpeg version n7.1 Copyright (c) 2000-2024 the FFmpeg developers", 7),
+        ("ffmpeg version 4.4.2-0ubuntu0.22.04.1 Copyright (c) 2000-2021 the FFmpeg developers", 4),
+        ("ffmpeg version 7.1.1-tessus  https://evermeet.cx/ffmpeg/  Copyright (c) 2000-2025", 7),
+    ])
+    def test_parses_the_major_version(self, monkeypatch, first_line, expected):
+        fake_run(monkeypatch, stdout=first_line + "\nbuilt with Apple clang version 16.0.0\n")
+        assert ffmpeg.get_ffmpeg_major_version() == expected
+
+    @pytest.mark.parametrize("first_line", [
+        "ffmpeg version N-118000-gabcdef1234 Copyright (c) 2000-2025 the FFmpeg developers",
+        "ffmpeg version 2024-05-06-git-abc123-essentials_build-www.gyan.dev Copyright (c) 2000-2024",
+        "something else entirely",
+        "",
+    ])
+    def test_unparsable_version_is_an_ffmpeg_error(self, monkeypatch, first_line):
+        fake_run(monkeypatch, stdout=first_line + "\n")
+        with pytest.raises(ffmpeg.FFmpegError, match="Не удалось определить версию ffmpeg"):
+            ffmpeg.get_ffmpeg_major_version()
+
+    def test_missing_ffmpeg(self, monkeypatch):
+        fake_run(monkeypatch, raises=FileNotFoundError())
+        with pytest.raises(ffmpeg.FFmpegError, match="Не найден ffmpeg в PATH"):
+            ffmpeg.get_ffmpeg_major_version()
+
+    def test_command_and_timeout(self, monkeypatch):
+        seen = {}
+
+        def run(command, **kwargs):
+            seen["command"], seen["timeout"] = command, kwargs.get("timeout")
+            return subprocess.CompletedProcess(command, 0, "ffmpeg version 8.0\n", "")
+
+        monkeypatch.setattr(ffmpeg.subprocess, "run", run)
+        ffmpeg.get_ffmpeg_major_version()
+        assert seen == {"command": ["ffmpeg", "-version"], "timeout": 10}
+
+    def test_hung_ffmpeg_is_reported_not_awaited_forever(self, monkeypatch):
+        fake_run(monkeypatch, raises=subprocess.TimeoutExpired(["ffmpeg", "-version"], 10))
+        with pytest.raises(ffmpeg.FFmpegError, match="не ответил за 10 с"):
+            ffmpeg.get_ffmpeg_major_version()
+
+
 class TestGetMediaDuration:
     def test_parses_seconds(self, monkeypatch):
         calls = fake_run(monkeypatch, stdout="11389.662667\n")
