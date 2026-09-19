@@ -15,10 +15,10 @@
 остальное живёт в пакете-владельце.
 
 1. Файл называется по тому, что в нём лежит, а не по фиче, которой он понадобился первой.
-2. Всё, что запускает ffmpeg/ffprobe, — в `common/ffmpeg.py`. Ошибки — только `FFmpegError`;
-   вызывающий код не разбирает `CalledProcessError`/`FileNotFoundError`.
-   *Пока исключение:* `fork_join/fork_join.py` содержит свои `run_ffmpeg`/`check_ffmpeg`/`FFmpegError`
-   (перенос запланирован). Новый код так не писать.
+2. Всё, что запускает ffmpeg/ffprobe, — в `common/ffmpeg.py` (`run_ffmpeg` для нарезки/склейки/конвертации,
+   отдельные функции для длительности, пауз, ключевых кадров). Ошибки — только `FFmpegError`;
+   вызывающий код не разбирает `CalledProcessError`/`FileNotFoundError`. Свои `subprocess.run(["ffmpeg", ...])`
+   в других модулях не писать.
 3. Чистая логика над интервалами и списками времён (без запуска процессов и чтения файлов) —
    в `common/intervals.py`.
 4. Обработка текста — в `common/filler_words.py`.

@@ -526,8 +526,8 @@ class PipelineUI(QWidget):
             return
 
         try:
-            fork_join.check_ffmpeg()
-        except fork_join.FFmpegError as e:
+            ffmpeg.check_ffmpeg()
+        except ffmpeg.FFmpegError as e:
             QMessageBox.critical(self, "ffmpeg не найден", str(e))
             return
 
@@ -616,7 +616,7 @@ class PipelineUI(QWidget):
                     log(f"Speech-to-text завершён за {(time.time() - t0) / 60:.1f} мин.")
 
             self.done_signal.emit()
-        except (fork_join.ConfigError, fork_join.FFmpegError, ffmpeg.FFmpegError, EnvironmentCheckError,
+        except (fork_join.ConfigError, ffmpeg.FFmpegError, EnvironmentCheckError,
                 diarize_pyannote.DiarizationError) as e:
             self.error_signal.emit(str(e))
         except Exception as e:  # noqa: BLE001 - показать пользователю любую неожиданную ошибку

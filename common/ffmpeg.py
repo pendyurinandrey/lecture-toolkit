@@ -9,6 +9,7 @@ CalledProcessError/FileNotFoundError.
 """
 
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -21,19 +22,33 @@ class FFmpegError(RuntimeError):
     """ffmpeg/ffprobe не найден или завершился с ошибкой."""
 
 
+def _not_found(tool: str) -> FFmpegError:
+    return FFmpegError(f"Не найден {tool} в PATH. Установите ffmpeg, например:\n    brew install ffmpeg")
+
+
+def check_ffmpeg() -> None:
+    """Проверяет, что ffmpeg есть в PATH. Бросает FFmpegError с подсказкой по установке."""
+    if shutil.which("ffmpeg") is None:
+        raise _not_found("ffmpeg")
+
+
 def _run(command: list, action: str) -> subprocess.CompletedProcess:
     """Запускает команду, возвращает результат с захваченными stdout/stderr.
     Бросает FFmpegError, если программа не найдена или код возврата не нулевой."""
     try:
         result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except FileNotFoundError as e:
-        raise FFmpegError(
-            f"Не найден {command[0]} в PATH. Установите ffmpeg, например:\n    brew install ffmpeg"
-        ) from e
+        raise _not_found(command[0]) from e
     if result.returncode != 0:
         tail = "\n".join(result.stderr.strip().splitlines()[-_ERROR_TAIL_LINES:])
         raise FFmpegError(f"{action}: {command[0]} завершился с ошибкой:\n{tail}")
     return result
+
+
+def run_ffmpeg(args: list, action: str = "Не удалось выполнить команду ffmpeg") -> None:
+    """Запускает ffmpeg с переданными аргументами (перезаписывает выходной файл,
+    показывает только ошибки). action — что делали: попадёт в текст ошибки."""
+    _run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *args], action)
 
 
 def get_media_duration(path) -> float:
@@ -98,8 +113,8 @@ def convert_to_wav_16k_mono(src_path, dst_path) -> Path:
     диаризации: на несжатом входе оба работают с заметно меньшим пиком памяти,
     чем на M4A."""
     dst_path = Path(dst_path)
-    _run(
-        ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(src_path),
+    run_ffmpeg(
+        ["-nostdin", "-i", str(src_path),
          "-vn", "-ac", "1", "-ar", str(WAV_SAMPLE_RATE), "-c:a", "pcm_s16le", str(dst_path)],
         f"Не удалось конвертировать {src_path} в WAV",
     )

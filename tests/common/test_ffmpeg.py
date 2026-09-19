@@ -42,6 +42,42 @@ class TestErrors:
         assert issubclass(ffmpeg.FFmpegError, RuntimeError)
 
 
+class TestCheckFfmpeg:
+    def test_found(self, monkeypatch):
+        monkeypatch.setattr(ffmpeg.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+        ffmpeg.check_ffmpeg()  # не бросает
+
+    def test_missing_gives_install_hint(self, monkeypatch):
+        monkeypatch.setattr(ffmpeg.shutil, "which", lambda name: None)
+        with pytest.raises(ffmpeg.FFmpegError) as info:
+            ffmpeg.check_ffmpeg()
+        assert "Не найден ffmpeg в PATH" in str(info.value) and "brew install ffmpeg" in str(info.value)
+
+
+class TestRunFfmpeg:
+    def test_adds_overwrite_and_quiet_flags_before_arguments(self, monkeypatch):
+        calls = fake_run(monkeypatch)
+        ffmpeg.run_ffmpeg(["-i", "in.mp4", "out.mp4"])
+        assert calls[0] == ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", "in.mp4", "out.mp4"]
+
+    def test_error_names_the_action(self, monkeypatch):
+        fake_run(monkeypatch, returncode=1, stderr="Invalid data found when processing input")
+        with pytest.raises(ffmpeg.FFmpegError) as info:
+            ffmpeg.run_ffmpeg(["-i", "x"], "Не удалось вырезать фрагмент")
+        assert "Не удалось вырезать фрагмент" in str(info.value)
+        assert "Invalid data found" in str(info.value)
+
+    def test_default_action_text(self, monkeypatch):
+        fake_run(monkeypatch, returncode=1, stderr="boom")
+        with pytest.raises(ffmpeg.FFmpegError, match="Не удалось выполнить команду ffmpeg"):
+            ffmpeg.run_ffmpeg(["-i", "x"])
+
+    def test_missing_binary(self, monkeypatch):
+        fake_run(monkeypatch, raises=FileNotFoundError())
+        with pytest.raises(ffmpeg.FFmpegError, match="Не найден ffmpeg в PATH"):
+            ffmpeg.run_ffmpeg(["-i", "x"])
+
+
 class TestGetMediaDuration:
     def test_parses_seconds(self, monkeypatch):
         calls = fake_run(monkeypatch, stdout="11389.662667\n")

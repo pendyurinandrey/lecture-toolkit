@@ -17,18 +17,14 @@
 
 import json
 import os
-import shutil
-import subprocess
 import sys
 import tempfile
+
+from common.ffmpeg import FFmpegError, check_ffmpeg, run_ffmpeg
 
 
 class ConfigError(ValueError):
     """Некорректная конфигурация fork_join."""
-
-
-class FFmpegError(RuntimeError):
-    """Ошибка запуска/выполнения ffmpeg."""
 
 
 def hhmmss_to_seconds(value: str) -> float:
@@ -44,14 +40,6 @@ def seconds_to_hhmmss(value: float) -> str:
     hours, remainder = divmod(total, 3600)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-
-def check_ffmpeg() -> None:
-    if shutil.which("ffmpeg") is None:
-        raise FFmpegError(
-            "Не найден ffmpeg в PATH. Установите его, например:\n"
-            "    brew install ffmpeg"
-        )
 
 
 def validate_config(config: dict) -> None:
@@ -107,17 +95,6 @@ def load_config(config_path: str) -> dict:
     return config
 
 
-def run_ffmpeg(args: list) -> None:
-    result = subprocess.run(
-        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"] + args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise FFmpegError(f"Команда ffmpeg завершилась с ошибкой:\n{result.stdout}")
-
-
 def cut_fragment(source_path: str, start: str, end: str, out_path: str) -> None:
     duration = hhmmss_to_seconds(end) - hhmmss_to_seconds(start)
     run_ffmpeg(
@@ -128,7 +105,8 @@ def cut_fragment(source_path: str, start: str, end: str, out_path: str) -> None:
             "-c", "copy",
             "-avoid_negative_ts", "make_zero",
             out_path,
-        ]
+        ],
+        f"Не удалось вырезать фрагмент {start}–{end} из {source_path}",
     )
 
 
@@ -162,7 +140,8 @@ def build_video(segments: list, tmp_dir: str, video_path: str, log=lambda msg: N
             "-i", concat_list_path,
             "-c", "copy",
             video_path,
-        ]
+        ],
+        "Не удалось склеить фрагменты в итоговое видео",
     )
 
 
@@ -177,7 +156,8 @@ def extract_audio(video_path: str, audio_path: str) -> None:
             "-vn",
             "-acodec", "copy",
             audio_path,
-        ]
+        ],
+        f"Не удалось извлечь звуковую дорожку из {video_path}",
     )
 
 
