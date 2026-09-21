@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 from common.ffmpeg import detect_silences, get_keyframe_timestamps
 from common.intervals import (
     IntervalRangeError,
+    add_left_pad,
     edit_interval,
     keep_intervals_between_silences,
     snap_intervals_to_keyframes,
@@ -247,9 +248,12 @@ class FragmentsPlayerDialog(QDialog):
     detect_done_signal = Signal(list)
     detect_error_signal = Signal(str)
 
-    def __init__(self, parent, video_path: str, duration: float, fragments: list):
+    def __init__(self, parent, video_path: str, duration: float, fragments: list, media_kind: str = "video"):
+        """media_kind: "video" или "audio". У аудио вместо картинки чёрное поле, а «Отступ в начале
+        фрагмента» — простой запас до речи (ключевых кадров у аудио нет)."""
         super().__init__(parent)
         self.setWindowTitle(f"Фрагменты — {Path(video_path).name}")
+        self.media_kind = media_kind
         self.video_path = video_path
         self.duration = duration
         self.result_fragments = None
@@ -277,10 +281,15 @@ class FragmentsPlayerDialog(QDialog):
         self.media_player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
         self.media_player.setAudioOutput(self.audio_output)
-        self.video_widget = QVideoWidget()
-        self.video_widget.setMinimumHeight(300)
-        self.media_player.setVideoOutput(self.video_widget)
-        layout.addWidget(self.video_widget, stretch=1)
+        if self.media_kind == "audio":
+            self.screen_widget = QLabel("Аудиофайл")
+            self.screen_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.screen_widget.setStyleSheet("background-color: black; color: #808080; font-size: 28px;")
+        else:
+            self.screen_widget = QVideoWidget()
+            self.media_player.setVideoOutput(self.screen_widget)
+        self.screen_widget.setMinimumHeight(300)
+        layout.addWidget(self.screen_widget, stretch=1)
 
         controls = QHBoxLayout()
         self.play_button = QPushButton("▶")
@@ -365,12 +374,21 @@ class FragmentsPlayerDialog(QDialog):
         self.detect_button.clicked.connect(self._on_detect_clicked)
         detect_layout.addWidget(self.detect_button, 0, 2)
 
-        detect_layout.addWidget(QLabel("Отступ в начале фрагмента"), 1, 0)
+        pad_label = QLabel("Отступ в начале фрагмента")
+        detect_layout.addWidget(pad_label, 1, 0)
         self.left_pad_spin = QSpinBox()
         self.left_pad_spin.setRange(0, 3600)
         self.left_pad_spin.setSingleStep(1)
         self.left_pad_spin.setValue(1)
         self.left_pad_spin.setSuffix(" с")
+        pad_hint = (
+            "Фрагмент начнётся на столько секунд раньше найденного начала речи (но не заходя на предыдущий фрагмент)."
+            if self.media_kind == "audio" else
+            "Минимальный запас до начала речи: видео режется по ключевым кадрам, и если ближайший ключевой "
+            "кадр ближе этого запаса, берётся предыдущий."
+        )
+        pad_label.setToolTip(pad_hint)
+        self.left_pad_spin.setToolTip(pad_hint)
         detect_layout.addWidget(self.left_pad_spin, 1, 1)
 
         detect_layout.setColumnStretch(3, 1)
@@ -542,8 +560,11 @@ class FragmentsPlayerDialog(QDialog):
         try:
             silences = detect_silences(self.video_path, min_duration=min_pause)
             intervals = keep_intervals_between_silences(self.duration, silences)
-            keyframes = get_keyframe_timestamps(self.video_path)
-            intervals = snap_intervals_to_keyframes(intervals, keyframes, left_pad, self.duration)
+            if self.media_kind == "audio":
+                intervals = add_left_pad(intervals, left_pad)
+            else:
+                keyframes = get_keyframe_timestamps(self.video_path)
+                intervals = snap_intervals_to_keyframes(intervals, keyframes, left_pad, self.duration)
             self.detect_done_signal.emit(intervals)
         except Exception as e:  # noqa: BLE001 - показать пользователю любую ошибку ffmpeg
             self.detect_error_signal.emit(str(e))

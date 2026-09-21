@@ -51,6 +51,7 @@ from common import ffmpeg
 from common.timecode import format_duration, hhmmss_to_seconds
 from diarization import diarize_pyannote
 from fork_join import fork_join
+from ui import media_selection
 from ui.fragments_player import FragmentsPlayerDialog
 from speech_to_text_gigaam import transcribe
 from speech_to_text_gigaam.environment import (
@@ -59,8 +60,6 @@ from speech_to_text_gigaam.environment import (
     ensure_hf_token,
 )
 
-VIDEO_FILTER = "Видео MP4 (*.mp4);;Все файлы (*)"
-AUDIO_FILTER = "M4A аудио (*.m4a)"
 TEXT_FILTER = "Текстовый файл (*.txt)"
 
 
@@ -128,6 +127,8 @@ class PipelineUI(QWidget):
         self.setWindowTitle("Lecture Pipeline")
 
         self.segments = []  # [{"path": str, "fragments": [{"start": str, "end": str}, ...]}]
+        # MediaInfo первого файла: тип (видео/аудио) и формат всего списка; None, пока список пуст
+        self.reference_info = None
         self.worker_thread = None
 
         self.log_signal.connect(self._log)
@@ -173,12 +174,17 @@ class PipelineUI(QWidget):
         layout = QVBoxLayout(self)
         layout.setMenuBar(self._build_menu_bar())
 
-        title_label = QLabel("Видеофайлы и фрагменты")
+        title_label = QLabel("Файлы и фрагменты")
         font = title_label.font()
         font.setBold(True)
         font.setPointSize(font.pointSize() + 1)
         title_label.setFont(font)
         layout.addWidget(title_label)
+
+        self.source_label = QLabel()
+        self.source_label.setWordWrap(True)
+        self.source_label.setEnabled(False)  # приглушённый цвет: это пояснение, а не поле ввода
+        layout.addWidget(self.source_label)
 
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Путь к файлу / фрагмент", "Начало", "Конец"])
@@ -186,7 +192,7 @@ class PipelineUI(QWidget):
         layout.addWidget(self.tree, stretch=1)
 
         tree_buttons = QHBoxLayout()
-        add_seg_btn = QPushButton("Добавить видеофайл")
+        add_seg_btn = QPushButton("Добавить видео/аудио")
         add_seg_btn.clicked.connect(self._add_segment)
         tree_buttons.addWidget(add_seg_btn)
         add_frag_btn = QPushButton("Добавить фрагмент")
@@ -211,14 +217,16 @@ class PipelineUI(QWidget):
         output_group = QGroupBox("Результат fork-join")
         output_layout = QGridLayout(output_group)
 
-        output_layout.addWidget(QLabel("Видео (MP4):"), 0, 0)
+        self.video_label = QLabel("Видео (MP4):")
+        output_layout.addWidget(self.video_label, 0, 0)
         self.video_path_edit = QLineEdit()
         output_layout.addWidget(self.video_path_edit, 0, 1)
-        video_browse_btn = QPushButton("Обзор...")
-        video_browse_btn.clicked.connect(self._browse_video_output)
-        output_layout.addWidget(video_browse_btn, 0, 2)
+        self.video_browse_btn = QPushButton("Обзор...")
+        self.video_browse_btn.clicked.connect(self._browse_video_output)
+        output_layout.addWidget(self.video_browse_btn, 0, 2)
 
-        output_layout.addWidget(QLabel("Аудио (M4A):"), 1, 0)
+        self.audio_label = QLabel("Аудио (M4A):")
+        output_layout.addWidget(self.audio_label, 1, 0)
         self.audio_path_edit = QLineEdit()
         output_layout.addWidget(self.audio_path_edit, 1, 1)
         audio_browse_btn = QPushButton("Обзор...")
@@ -297,7 +305,7 @@ class PipelineUI(QWidget):
     def _selected_indices(self):
         """Возвращает (seg_idx, frag_idx) для текущего выделения дерева.
 
-        frag_idx is None, если выбран видеофайл (а не фрагмент).
+        frag_idx is None, если выбран файл (а не фрагмент).
         """
         item = self.tree.currentItem()
         if item is None:
@@ -327,22 +335,49 @@ class PipelineUI(QWidget):
                     select_item = frag_item
         if select_item is not None:
             self.tree.setCurrentItem(select_item)
+        self._update_media_ui()
+
+    def _update_media_ui(self):
+        """Подстраивает экран под тип источника: подпись над списком, строка «Видео (MP4)»,
+        подпись аудио-результата. Пустой список снимает ограничение на тип."""
+        if not self.segments:
+            self.reference_info = None
+        self.source_label.setText(media_selection.source_caption(self.reference_info))
+        visible = media_selection.video_output_visible(self.reference_info)
+        for widget in (self.video_label, self.video_path_edit, self.video_browse_btn):
+            widget.setVisible(visible)
+        self.audio_label.setText(media_selection.audio_output_label(self.reference_info))
 
     # ------------------------------------------------------------- editing
 
-    def _open_fragments_dialog(self, seg_idx: int) -> bool:
-        """Открывает диалог плеера с фрагментами для segments[seg_idx].
-        Возвращает True, если пользователь подтвердил изменения (OK)."""
-        video_path = self.segments[seg_idx]["path"]
+    def _checked_media(self, path: str, reference):
+        """MediaInfo файла, если его можно добавить к списку, иначе None (причина уже показана)."""
         try:
-            duration = ffmpeg.get_media_duration(video_path)
+            info = ffmpeg.probe_media(path)
+        except ffmpeg.FFmpegError as e:
+            QMessageBox.critical(self, "Не удалось прочитать файл", str(e))
+            return None
+        problem = media_selection.check_new_file(reference, info, Path(path).name)
+        if problem:
+            QMessageBox.critical(self, "Файл не подходит", f"{problem}\n\n{media_selection.FILE_HINT}")
+            return None
+        return info
+
+    def _open_fragments_dialog(self, seg_idx: int, media_kind: str) -> bool:
+        """Открывает диалог плеера с фрагментами для segments[seg_idx] ("video" или "audio").
+        Возвращает True, если пользователь подтвердил изменения (OK)."""
+        media_path = self.segments[seg_idx]["path"]
+        try:
+            duration = ffmpeg.get_media_duration(media_path)
         except Exception as e:  # noqa: BLE001 - показать пользователю любую ошибку ffprobe
             QMessageBox.critical(
-                self, "Не удалось открыть видео",
+                self, "Не удалось открыть файл",
                 f"Не удалось определить длительность файла:\n{e}",
             )
             return False
-        dialog = FragmentsPlayerDialog(self, video_path, duration, self.segments[seg_idx]["fragments"])
+        dialog = FragmentsPlayerDialog(
+            self, media_path, duration, self.segments[seg_idx]["fragments"], media_kind=media_kind,
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return False
         self.segments[seg_idx]["fragments"] = dialog.result_fragments
@@ -351,38 +386,55 @@ class PipelineUI(QWidget):
     def _add_segment(self):
         movies_dir = Path.home() / "Movies"
         default_dir = str(movies_dir) if movies_dir.is_dir() else ""
-        path, _ = QFileDialog.getOpenFileName(self, "Выберите видеофайл", default_dir, VIDEO_FILTER)
+        reference = self.reference_info
+        path, _ = QFileDialog.getOpenFileName(
+            self, media_selection.open_file_title(reference), default_dir, media_selection.open_file_filter(reference),
+        )
         if not path:
+            return
+        info = self._checked_media(path, reference)
+        if info is None:
             return
         self.segments.append({"path": path, "fragments": []})
         seg_idx = len(self.segments) - 1
-        if not self._open_fragments_dialog(seg_idx):
+        if not self._open_fragments_dialog(seg_idx, info.kind):
             del self.segments[seg_idx]
             self._refresh_tree()
             return
+        if self.reference_info is None:
+            self.reference_info = info  # первый файл задал тип и формат списка
         self._refresh_tree(select=seg_idx)
 
     def _add_fragment(self):
         seg_idx, _ = self._selected_indices()
         if seg_idx is None:
-            QMessageBox.information(self, "Добавить фрагмент", "Сначала выберите видеофайл.")
+            QMessageBox.information(self, "Добавить фрагмент", "Сначала выберите файл.")
             return
-        if not self._open_fragments_dialog(seg_idx):
+        if not self._open_fragments_dialog(seg_idx, self.reference_info.kind):
             return
         self._refresh_tree(select=seg_idx)
 
     def _edit_selected(self):
         seg_idx, frag_idx = self._selected_indices()
         if seg_idx is None:
-            QMessageBox.information(self, "Изменить", "Выберите видеофайл или фрагмент.")
+            QMessageBox.information(self, "Изменить", "Выберите файл или фрагмент.")
             return
         if frag_idx is None:
+            # единственный файл можно заменить файлом другого типа (он станет новым «первым»);
+            # при нескольких — только совместимым с остальными
+            reference = None if len(self.segments) == 1 else self.reference_info
             new_path, _ = QFileDialog.getOpenFileName(
-                self, "Выберите видеофайл", self.segments[seg_idx]["path"], VIDEO_FILTER,
+                self, media_selection.open_file_title(reference), self.segments[seg_idx]["path"],
+                media_selection.open_file_filter(reference),
             )
             if not new_path:
                 return
+            info = self._checked_media(new_path, reference)
+            if info is None:
+                return
             self.segments[seg_idx]["path"] = new_path
+            if len(self.segments) == 1:
+                self.reference_info = info
             self._refresh_tree(select=seg_idx)
         else:
             fragment = self.segments[seg_idx]["fragments"][frag_idx]
@@ -395,12 +447,12 @@ class PipelineUI(QWidget):
     def _delete_selected(self):
         seg_idx, frag_idx = self._selected_indices()
         if seg_idx is None:
-            QMessageBox.information(self, "Удалить", "Выберите видеофайл или фрагмент для удаления.")
+            QMessageBox.information(self, "Удалить", "Выберите файл или фрагмент для удаления.")
             return
         if frag_idx is None:
             reply = QMessageBox.question(
-                self, "Удалить видеофайл",
-                "Удалить выбранный видеофайл вместе со всеми его фрагментами?",
+                self, "Удалить файл",
+                "Удалить выбранный файл вместе со всеми его фрагментами?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
@@ -465,9 +517,18 @@ class PipelineUI(QWidget):
             self.transcript_path_edit.setText(str(video_path.with_suffix(".txt")))
 
     def _browse_audio_output(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Куда сохранить аудио", "", AUDIO_FILTER)
-        if path:
-            self.audio_path_edit.setText(self._ensure_extension(path, ".m4a"))
+        reference = self.reference_info
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Куда сохранить аудио", "", media_selection.audio_output_filter(reference),
+        )
+        if not path:
+            return
+        path = self._ensure_extension(path, media_selection.audio_output_extension(reference))
+        self.audio_path_edit.setText(path)
+        # без видео путь к транскрипции заполняется от аудио (строки «Видео» нет)
+        if (media_selection.is_audio(reference) and self.speech2text_check.isChecked()
+                and not self.transcript_path_edit.text().strip()):
+            self.transcript_path_edit.setText(str(Path(path).with_suffix(".txt")))
 
     def _browse_transcript_output(self):
         audio_path = self.audio_path_edit.text().strip()
@@ -479,6 +540,12 @@ class PipelineUI(QWidget):
     # ------------------------------------------------------------- config
 
     def _build_config(self) -> dict:
+        if media_selection.is_audio(self.reference_info):
+            return {
+                "mediaType": "audio",
+                "segments": self.segments,
+                "output": {"audioPath": self.audio_path_edit.text().strip()},
+            }
         return {
             "segments": self.segments,
             "output": {
@@ -532,6 +599,12 @@ class PipelineUI(QWidget):
             QMessageBox.critical(self, "ffmpeg не найден", str(e))
             return
 
+        try:
+            fork_join.check_segments_compatible(config)
+        except (fork_join.ConfigError, ffmpeg.FFmpegError) as e:
+            QMessageBox.critical(self, "Файлы нельзя склеить", str(e))
+            return
+
         run_speech2text = self.speech2text_check.isChecked()
         transcript_path = self.transcript_path_edit.text().strip()
         remove_fillers = self.remove_fillers_check.isChecked()
@@ -554,7 +627,7 @@ class PipelineUI(QWidget):
                 QMessageBox.critical(self, "Окружение не готово", str(e))
                 return
 
-        video_path = config["output"]["videoPath"]
+        video_path = config["output"].get("videoPath")  # в режиме «только аудио» видео нет
         audio_path = config["output"]["audioPath"]
         check_paths = [video_path, audio_path]
         if run_speech2text:

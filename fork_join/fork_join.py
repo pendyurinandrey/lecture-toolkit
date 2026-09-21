@@ -20,11 +20,15 @@ import os
 import tempfile
 from pathlib import Path
 
-from common.ffmpeg import check_ffmpeg, probe_media, run_ffmpeg
+from common.ffmpeg import check_ffmpeg, get_media_duration, probe_media, run_ffmpeg
 from common.media_info import AUDIO_EXTENSIONS, audio_extension, incompatibilities
 from common.timecode import hhmmss_to_seconds
 
 MEDIA_TYPES = ("video", "audio")
+# Время в конфигурации — целые секунды, а длительность файла дробная: конец «на всю запись»
+# 5296.36 с записывается как 01:28:16 и отрезал бы хвост. Конец, отстоящий от конца файла не
+# больше чем на это число секунд (меньше точности «ЧЧ:ММ:СС»), означает «до конца файла».
+END_OF_FILE_TOLERANCE = 0.5
 
 
 class ConfigError(ValueError):
@@ -124,13 +128,18 @@ def check_segments_compatible(config: dict) -> None:
                               f'называться *{expected}, а не *{actual}')
 
 
-def cut_fragment(source_path: str, start: str, end: str, out_path: str, media_type: str = "video") -> None:
-    duration = hhmmss_to_seconds(end) - hhmmss_to_seconds(start)
+def cut_fragment(source_path: str, start: str, end: str, out_path: str, media_type: str = "video",
+                 source_duration: float = None) -> None:
+    """Вырезает [start, end] без перекодирования. Если известна длительность файла
+    (source_duration) и end почти у самого конца файла (см. END_OF_FILE_TOLERANCE), режет до
+    конца файла — иначе округление секунд отрезало бы хвост записи."""
+    end_s = hhmmss_to_seconds(end)
+    to_end_of_file = source_duration is not None and source_duration - end_s <= END_OF_FILE_TOLERANCE
     run_ffmpeg(
         [
             "-ss", start,
             "-i", source_path,
-            "-t", str(duration),
+            *([] if to_end_of_file else ["-t", str(end_s - hhmmss_to_seconds(start))]),
             # у аудио «-vn»: встроенная обложка (m4a/mp3) не нужна и мешала бы склейке
             *(["-vn"] if media_type == "audio" else []),
             "-c", "copy",
@@ -153,12 +162,13 @@ def join_fragments(segments: list, tmp_dir: str, output_path: str, media_type: s
     fragment_paths = []
     for i, segment in enumerate(segments):
         source_path = segment["path"]
+        source_duration = get_media_duration(source_path)
         # расширение фрагмента = расширению исходника: контейнер должен уметь хранить его кодек как есть
         extension = ".mp4" if media_type == "video" else Path(source_path).suffix.lower()
         for j, fragment in enumerate(segment["fragments"]):
             log(f"Нарезаю фрагмент {i + 1}.{j + 1} из {os.path.basename(source_path)}...")
             out_path = os.path.join(tmp_dir, f"fragment_{i:02d}_{j:02d}{extension}")
-            cut_fragment(source_path, fragment["start"], fragment["end"], out_path, media_type)
+            cut_fragment(source_path, fragment["start"], fragment["end"], out_path, media_type, source_duration)
             fragment_paths.append(out_path)
 
     concat_list_path = os.path.join(tmp_dir, "concat_list.txt")

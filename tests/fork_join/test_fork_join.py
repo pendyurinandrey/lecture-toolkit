@@ -88,6 +88,8 @@ class FakeFfmpeg:
         monkeypatch.setattr(fork_join, "run_ffmpeg", lambda args, action="": self.calls.append((args, action)))
         monkeypatch.setattr(fork_join, "check_ffmpeg", lambda: None)
         monkeypatch.setattr(fork_join, "probe_media", lambda path: self.infos.get(str(path), self.default_info))
+        self.durations = {}
+        monkeypatch.setattr(fork_join, "get_media_duration", lambda path: self.durations.get(str(path), 100000.0))
 
 
 class TestCommands:
@@ -273,3 +275,49 @@ class TestAudioMode:
         assert fork_join.explain_incompatibility(files["a.m4a"], files["b.m4a"]) is None
         assert fork_join.explain_incompatibility(files["a.m4a"], files["c.mp3"]) == "c.mp3: кодек звука MP3 вместо AAC"
         assert "смешивать видео и аудио нельзя" in fork_join.explain_incompatibility(files["a.m4a"], files["v.mp4"])
+
+
+class TestCutToEndOfFile:
+    """Конец фрагмента у самого конца файла — резать до конца, а не терять хвост из-за округления секунд."""
+
+    def cut(self, monkeypatch, end, duration, media_type="video"):
+        fake = FakeFfmpeg(monkeypatch)
+        fork_join.cut_fragment("in.m4a", "00:00:00", end, "out.m4a", media_type, source_duration=duration)
+        return fake.calls[0][0]
+
+    def test_end_shown_as_the_file_end_cuts_to_the_end(self, monkeypatch):
+        # запись 5296.363 с показывается как 01:28:16 — раньше хвост 0.363 с терялся
+        args = self.cut(monkeypatch, "01:28:16", 5296.363)
+        assert "-t" not in args and args[:4] == ["-ss", "00:00:00", "-i", "in.m4a"]
+
+    def test_end_a_bit_after_the_file_end_also_cuts_to_the_end(self, monkeypatch):
+        assert "-t" not in self.cut(monkeypatch, "01:28:17", 5296.363)     # округление вверх
+
+    def test_end_exactly_at_the_tolerance_edge(self, monkeypatch):
+        assert "-t" not in self.cut(monkeypatch, "00:01:40", 100.5)        # разница ровно 0.5 с
+        assert "-t" in self.cut(monkeypatch, "00:01:40", 100.51)           # чуть больше — уже обычный конец
+
+    def test_end_clearly_before_the_file_end_keeps_the_duration(self, monkeypatch):
+        args = self.cut(monkeypatch, "01:28:15", 5296.363)                 # 1.363 с до конца
+        assert args[args.index("-t") + 1] == "5295.0"
+
+    def test_unknown_duration_keeps_the_old_behaviour(self, monkeypatch):
+        fake = FakeFfmpeg(monkeypatch)
+        fork_join.cut_fragment("in.mp4", "00:01:00", "00:02:30", "out.mp4")
+        assert fake.calls[0][0][4:6] == ["-t", "90.0"]
+
+    def test_works_for_audio_too(self, monkeypatch):
+        args = self.cut(monkeypatch, "01:28:16", 5296.363, media_type="audio")
+        assert "-t" not in args and "-vn" in args
+
+    def test_join_uses_each_sources_own_duration(self, monkeypatch, tmp_path):
+        fake = FakeFfmpeg(monkeypatch)
+        a, b = str(tmp_path / "a.mp4"), str(tmp_path / "b.mp4")
+        fake.durations = {a: 5296.363, b: 5196.864}
+        segments = [{"path": a, "fragments": [{"start": "00:00:00", "end": "01:28:16"}]},
+                    {"path": b, "fragments": [{"start": "00:00:00", "end": "01:26:16"}]}]   # у b конец далеко
+        fork_join.join_fragments(segments, str(tmp_path), str(tmp_path / "out.mp4"))
+        cuts = [args for args, _ in fake.calls[:2]]
+        assert "-t" not in cuts[0]                      # a: до конца файла
+        assert cuts[1][cuts[1].index("-t") + 1] == "5176.0"   # b: обычный конец (60 с до конца)
+

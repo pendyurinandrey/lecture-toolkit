@@ -119,7 +119,7 @@ class TestRunWithoutDiarization:
         FakePipeline(monkeypatch, PLAIN_SEGMENTS)
         logs = []
         transcribe.run(audio, tmp_path / "res.txt", log=logs.append)
-        assert "Длительность видеофайла после обрезки и склейки: 01:02:05" in logs
+        assert "Длительность после обрезки и склейки: 01:02:05" in logs
         assert any("вывод speech_to_text_gigaam.worker" in m for m in logs)
         assert logs[-1].startswith("Готово: ")
 
