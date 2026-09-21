@@ -3,6 +3,12 @@
 MP4 и дополнительно сохраняет звуковую дорожку итогового файла в M4A —
 оба шага копированием потоков, без перекодирования, без потери качества.
 
+Для записей без видео (mediaType = "audio") то же самое делается со звуком:
+фрагменты M4A или MP3 нарезаются и склеиваются в один файл того же формата.
+
+Перед склейкой проверяется, что параметры всех файлов одинаковы (см.
+common/media_info.py): иначе ffmpeg склеил бы их молча и испортил результат.
+
 Формат конфигурации: см. README.md
 
 Отдельного запуска из командной строки нет: модуль используется из
@@ -12,17 +18,30 @@ ConfigError/FFmpegError, что позволяет UI показать ошиб�
 
 import os
 import tempfile
+from pathlib import Path
 
-from common.ffmpeg import check_ffmpeg, run_ffmpeg
+from common.ffmpeg import check_ffmpeg, probe_media, run_ffmpeg
+from common.media_info import AUDIO_EXTENSIONS, audio_extension, incompatibilities
 from common.timecode import hhmmss_to_seconds
+
+MEDIA_TYPES = ("video", "audio")
 
 
 class ConfigError(ValueError):
     """Некорректная конфигурация fork_join."""
 
 
+def media_type_of(config: dict) -> str:
+    """"video" (по умолчанию) или "audio"."""
+    return config.get("mediaType", "video")
+
+
 def validate_config(config: dict) -> None:
     """Проверяет структуру конфигурации. Бросает ConfigError при ошибке."""
+    media_type = media_type_of(config)
+    if media_type not in MEDIA_TYPES:
+        raise ConfigError(f'Поле "mediaType" должно быть "video" или "audio", а не {media_type!r}')
+
     segments = config.get("segments")
     if not isinstance(segments, list) or not (1 <= len(segments) <= 20):
         raise ConfigError('Поле "segments" должно быть массивом из 1..20 объектов')
@@ -56,17 +75,64 @@ def validate_config(config: dict) -> None:
     output = config.get("output", {})
     video_path = output.get("videoPath")
     audio_path = output.get("audioPath")
-    if not video_path or not audio_path:
+    if media_type == "audio":
+        if not audio_path:
+            raise ConfigError('Для mediaType "audio" поле "output" должно содержать "audioPath" ("videoPath" не нужен)')
+        if Path(audio_path).suffix.lower() not in AUDIO_EXTENSIONS:
+            raise ConfigError(f'"audioPath" должен заканчиваться на {" или ".join(AUDIO_EXTENSIONS)}: {audio_path}')
+    elif not video_path or not audio_path:
         raise ConfigError('Поле "output" должно содержать "videoPath" и "audioPath"')
 
 
-def cut_fragment(source_path: str, start: str, end: str, out_path: str) -> None:
+def explain_incompatibility(reference_path: str, other_path: str):
+    """Почему other_path нельзя склеивать с reference_path без перекодирования (текст для
+    пользователя) или None, если можно. Нужна и при добавлении файла в интерфейсе, и перед склейкой."""
+    problems = incompatibilities(probe_media(reference_path), probe_media(other_path))
+    if not problems:
+        return None
+    return f"{os.path.basename(other_path)}: " + "; ".join(problems)
+
+
+def check_segments_compatible(config: dict) -> None:
+    """Проверяет по содержимому файлов, что тип и параметры всех сегментов совпадают с типом
+    конфигурации и друг с другом, а для аудио — что выходной файл имеет подходящее расширение.
+    Бросает ConfigError. Без этой проверки ffmpeg склеил бы файлы молча и испортил результат."""
+    media_type = media_type_of(config)
+    paths = [segment["path"] for segment in config["segments"]]
+    infos = [probe_media(path) for path in paths]
+
+    for path, info in zip(paths, infos):
+        if info.kind != media_type:
+            found = "видео" if info.kind == "video" else "аудио"
+            raise ConfigError(f"{os.path.basename(path)}: это {found}, а конфигурация для "
+                              f"{'видео' if media_type == 'video' else 'аудио'}")
+
+    problems = [f"{os.path.basename(path)}: " + "; ".join(found)
+                for path, info in zip(paths[1:], infos[1:]) if (found := incompatibilities(infos[0], info))]
+    if problems:
+        raise ConfigError("Файлы нельзя склеить без перекодирования — параметры отличаются от первого файла:\n"
+                          + "\n".join(problems))
+
+    if media_type == "audio":
+        expected = audio_extension(infos[0])
+        if expected is None:
+            raise ConfigError(f"Формат звука {infos[0].audio_codec!r} не поддерживается: "
+                              f"нужен AAC (.m4a) или MP3 (.mp3)")
+        actual = Path(config["output"]["audioPath"]).suffix.lower()
+        if actual != expected:
+            raise ConfigError(f'Звук в файлах {infos[0].audio_codec.upper()}, поэтому итоговый файл должен '
+                              f'называться *{expected}, а не *{actual}')
+
+
+def cut_fragment(source_path: str, start: str, end: str, out_path: str, media_type: str = "video") -> None:
     duration = hhmmss_to_seconds(end) - hhmmss_to_seconds(start)
     run_ffmpeg(
         [
             "-ss", start,
             "-i", source_path,
             "-t", str(duration),
+            # у аудио «-vn»: встроенная обложка (m4a/mp3) не нужна и мешала бы склейке
+            *(["-vn"] if media_type == "audio" else []),
             "-c", "copy",
             "-avoid_negative_ts", "make_zero",
             out_path,
@@ -81,14 +147,18 @@ def escape_concat_path(path: str) -> str:
     return path.replace("'", "'\\''")
 
 
-def build_video(segments: list, tmp_dir: str, video_path: str, log=lambda msg: None) -> None:
+def join_fragments(segments: list, tmp_dir: str, output_path: str, media_type: str = "video",
+                   log=lambda msg: None) -> None:
+    """Нарезает фрагменты всех сегментов и склеивает их в output_path (видео или аудио)."""
     fragment_paths = []
     for i, segment in enumerate(segments):
         source_path = segment["path"]
+        # расширение фрагмента = расширению исходника: контейнер должен уметь хранить его кодек как есть
+        extension = ".mp4" if media_type == "video" else Path(source_path).suffix.lower()
         for j, fragment in enumerate(segment["fragments"]):
             log(f"Нарезаю фрагмент {i + 1}.{j + 1} из {os.path.basename(source_path)}...")
-            out_path = os.path.join(tmp_dir, f"fragment_{i:02d}_{j:02d}.mp4")
-            cut_fragment(source_path, fragment["start"], fragment["end"], out_path)
+            out_path = os.path.join(tmp_dir, f"fragment_{i:02d}_{j:02d}{extension}")
+            cut_fragment(source_path, fragment["start"], fragment["end"], out_path, media_type)
             fragment_paths.append(out_path)
 
     concat_list_path = os.path.join(tmp_dir, "concat_list.txt")
@@ -96,17 +166,18 @@ def build_video(segments: list, tmp_dir: str, video_path: str, log=lambda msg: N
         for p in fragment_paths:
             f.write(f"file '{escape_concat_path(p)}'\n")
 
-    os.makedirs(os.path.dirname(video_path) or ".", exist_ok=True)
-    log("Склеиваю фрагменты в итоговое видео...")
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    target = "итоговое видео" if media_type == "video" else "итоговый аудиофайл"
+    log(f"Склеиваю фрагменты в {target}...")
     run_ffmpeg(
         [
             "-f", "concat",
             "-safe", "0",
             "-i", concat_list_path,
             "-c", "copy",
-            video_path,
+            output_path,
         ],
-        "Не удалось склеить фрагменты в итоговое видео",
+        f"Не удалось склеить фрагменты в {target}",
     )
 
 
@@ -127,20 +198,28 @@ def extract_audio(video_path: str, audio_path: str) -> None:
 
 
 def process_config(config: dict, log=print) -> None:
-    """Выполняет нарезку/склейку видео и извлечение аудио по готовой конфигурации.
+    """Выполняет нарезку/склейку по готовой конфигурации: для видео — склеивает видео и
+    извлекает из него звук, для аудио — склеивает звук.
 
-    Бросает ConfigError при некорректной конфигурации и FFmpegError при
-    ошибках ffmpeg (в т.ч. если ffmpeg не установлен).
+    Бросает ConfigError при некорректной конфигурации или несовместимых файлах и
+    FFmpegError при ошибках ffmpeg (в т.ч. если ffmpeg не установлен).
     """
     validate_config(config)
     check_ffmpeg()
+    check_segments_compatible(config)
 
-    video_path = config["output"]["videoPath"]
+    media_type = media_type_of(config)
     audio_path = config["output"]["audioPath"]
 
     with tempfile.TemporaryDirectory(prefix="fork_join_") as tmp_dir:
         log("Нарезаю и склеиваю фрагменты...")
-        build_video(config["segments"], tmp_dir, video_path, log=log)
+        if media_type == "audio":
+            join_fragments(config["segments"], tmp_dir, audio_path, "audio", log=log)
+            log(f"Аудио сохранено: {audio_path}")
+            return
+
+        video_path = config["output"]["videoPath"]
+        join_fragments(config["segments"], tmp_dir, video_path, "video", log=log)
         log(f"Видео сохранено: {video_path}")
 
         log("Извлекаю звуковую дорожку...")

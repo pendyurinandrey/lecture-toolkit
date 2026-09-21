@@ -8,10 +8,13 @@ CalledProcessError/FileNotFoundError.
 Чистая логика над интервалами (без запуска процессов) лежит в intervals.py.
 """
 
+import json
 import re
 import shutil
 import subprocess
 from pathlib import Path
+
+from common.media_info import MediaInfo, parse_probe
 
 SILENCE_NOISE_DB = "-30dB"
 WAV_SAMPLE_RATE = 16000
@@ -83,6 +86,21 @@ def get_media_duration(path) -> float:
         return float(result.stdout.strip())
     except ValueError as e:
         raise FFmpegError(f"Не удалось определить длительность {path}: ffprobe вернул {result.stdout.strip()!r}") from e
+
+
+def probe_media(path) -> MediaInfo:
+    """Тип файла (видео/аудио) и параметры потоков — по содержимому, через ffprobe."""
+    result = _run(
+        ["ffprobe", "-v", "error",
+         "-show_entries", "stream=codec_type,codec_name,sample_rate,channels,width,height,pix_fmt,r_frame_rate"
+                          ":stream_disposition=attached_pic",
+         "-of", "json", str(path)],
+        f"Не удалось прочитать параметры {path}",
+    )
+    try:
+        return parse_probe(json.loads(result.stdout))
+    except (ValueError, TypeError) as e:   # json.JSONDecodeError — тоже ValueError
+        raise FFmpegError(f"Не удалось определить тип файла {path}: {e}") from e
 
 
 def detect_silences(path, min_duration: float = 0.5, noise_db: str = SILENCE_NOISE_DB) -> list:

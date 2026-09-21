@@ -4,6 +4,7 @@ import pytest
 
 from common.intervals import (
     IntervalRangeError,
+    add_left_pad,
     edit_interval,
     keep_intervals_between_silences,
     snap_intervals_to_keyframes,
@@ -162,4 +163,34 @@ class TestEditInterval:
         current = [10.0, 20.0]
         edit_interval("00:00:15", "00:00:19", current, 0.0, 100.0)
         assert current == [10.0, 20.0]
+
+
+class TestAddLeftPad:
+    """Запас до начала речи для аудио (у аудио нет ключевых кадров)."""
+
+    def test_start_moves_back_end_stays(self):
+        assert add_left_pad([[100.0, 200.0]], 1.0) == [[99.0, 200.0]]
+
+    def test_zero_pad_changes_nothing(self):
+        assert add_left_pad([[100.0, 200.0], [300.0, 400.0]], 0.0) == [[100.0, 200.0], [300.0, 400.0]]
+
+    def test_never_goes_below_zero(self):
+        assert add_left_pad([[0.4, 10.0]], 1.0) == [[0.0, 10.0]]
+
+    def test_pad_that_eats_the_gap_merges_neighbours(self):
+        assert add_left_pad([[10.0, 20.0], [20.5, 30.0]], 1.0) == [[9.0, 30.0]]
+
+    def test_touching_or_overlapping_intervals_merge(self):
+        assert add_left_pad([[10.0, 20.0], [20.0, 30.0]], 0.0) == [[10.0, 30.0]]
+
+    def test_gap_larger_than_the_pad_is_kept(self):
+        assert add_left_pad([[10.0, 20.0], [25.0, 30.0]], 1.0) == [[9.0, 20.0], [24.0, 30.0]]
+
+    def test_result_is_sorted_and_input_is_not_mutated(self):
+        intervals = [[50.0, 60.0], [10.0, 20.0]]
+        assert add_left_pad(intervals, 2.0) == [[8.0, 20.0], [48.0, 60.0]]
+        assert intervals == [[50.0, 60.0], [10.0, 20.0]]
+
+    def test_empty(self):
+        assert add_left_pad([], 1.0) == []
 

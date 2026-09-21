@@ -60,6 +60,23 @@ def keep_intervals_between_silences(duration: float, silences: list, min_length:
     return intervals
 
 
+def add_left_pad(intervals: list, left_pad: float) -> list:
+    """Сдвигает начало каждого фрагмента назад на left_pad секунд (не левее нуля).
+
+    Для аудио: ключевых кадров нет, нарезка точна до кадра AAC/MP3 (~20-30 мс), поэтому
+    вместо подгонки под ключевые кадры (snap_intervals_to_keyframes) нужен простой запас до
+    начала речи. Если запас «съел» паузу между соседними фрагментами (или они уже
+    соприкасаются), фрагменты сливаются в один."""
+    padded = sorted([max(0.0, start - left_pad), end] for start, end in intervals)
+    merged = []
+    for start, end in padded:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return merged
+
+
 def snap_intervals_to_keyframes(
     intervals: list, keyframes: list, left_pad: float, duration: float,
 ) -> list:

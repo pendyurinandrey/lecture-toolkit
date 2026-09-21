@@ -1,10 +1,18 @@
 """fork_join: проверка конфигурации и то, какие команды ffmpeg он формирует
 (сам ffmpeg подменён — файлы и запуск процессов не нужны)."""
 
+from pathlib import Path
+
 import pytest
 
 from common.ffmpeg import FFmpegError
+from common.media_info import MediaInfo
 from fork_join import fork_join
+
+VIDEO_INFO = MediaInfo(kind="video", audio_codec="aac", sample_rate=48000, channels=2,
+                       video_codec="h264", width=1920, height=1080, pix_fmt="yuv420p", frame_rate="30/1")
+AAC_INFO = MediaInfo(kind="audio", audio_codec="aac", sample_rate=48000, channels=1)
+MP3_INFO = MediaInfo(kind="audio", audio_codec="mp3", sample_rate=48000, channels=1)
 
 
 class TestValidateConfig:
@@ -71,12 +79,15 @@ def test_escape_concat_path_escapes_single_quotes():
 
 
 class FakeFfmpeg:
-    """Записывает вызовы run_ffmpeg(args, action)."""
+    """Записывает вызовы run_ffmpeg(args, action); probe_media отдаёт infos[путь] (по умолчанию — видео)."""
 
     def __init__(self, monkeypatch):
         self.calls = []
+        self.infos = {}
+        self.default_info = VIDEO_INFO
         monkeypatch.setattr(fork_join, "run_ffmpeg", lambda args, action="": self.calls.append((args, action)))
         monkeypatch.setattr(fork_join, "check_ffmpeg", lambda: None)
+        monkeypatch.setattr(fork_join, "probe_media", lambda path: self.infos.get(str(path), self.default_info))
 
 
 class TestCommands:
@@ -87,6 +98,12 @@ class TestCommands:
         assert args == ["-ss", "00:01:00", "-i", "in.mp4", "-t", "90.0", "-c", "copy",
                         "-avoid_negative_ts", "make_zero", "out.mp4"]
         assert "00:01:00" in action and "00:02:30" in action and "in.mp4" in action
+
+    def test_cut_fragment_of_audio_drops_cover_art_streams(self, monkeypatch):
+        fake = FakeFfmpeg(monkeypatch)
+        fork_join.cut_fragment("in.m4a", "00:01:00", "00:02:30", "out.m4a", media_type="audio")
+        assert fake.calls[0][0] == ["-ss", "00:01:00", "-i", "in.m4a", "-t", "90.0", "-vn", "-c", "copy",
+                                    "-avoid_negative_ts", "make_zero", "out.m4a"]
 
     def test_extract_audio_copies_the_audio_stream_without_recoding(self, monkeypatch):
         fake = FakeFfmpeg(monkeypatch)
@@ -127,3 +144,132 @@ class TestCommands:
         with pytest.raises(FFmpegError):
             fork_join.process_config(config)
         assert fake.calls == []                                     # до нарезки дело не дошло
+
+
+class TestAudioMode:
+    """Записи без видео: нарезка и склейка звука (mediaType = "audio")."""
+
+    @pytest.fixture
+    def files(self, tmp_path):
+        paths = {}
+        for name in ("a.m4a", "b.m4a", "c.mp3", "v.mp4"):
+            (tmp_path / name).write_bytes(b"")
+            paths[name] = str(tmp_path / name)
+        return paths
+
+    def config(self, files, sources=("a.m4a",), out="out.m4a", tmp_path=None, **extra):
+        return {
+            "mediaType": "audio",
+            "segments": [{"path": files[name], "fragments": [{"start": "00:00:10", "end": "00:00:40"}]}
+                         for name in sources],
+            "output": {"audioPath": str(Path(files["a.m4a"]).parent / out)},
+            **extra,
+        }
+
+    def audio_fake(self, monkeypatch, files):
+        fake = FakeFfmpeg(monkeypatch)
+        fake.infos = {files["a.m4a"]: AAC_INFO, files["b.m4a"]: AAC_INFO, files["c.mp3"]: MP3_INFO,
+                      files["v.mp4"]: VIDEO_INFO}
+        return fake
+
+    # --- конфигурация
+    def test_video_path_is_not_required_for_audio(self, files):
+        fork_join.validate_config(self.config(files))
+
+    def test_audio_path_is_required(self, files):
+        config = self.config(files)
+        config["output"] = {}
+        with pytest.raises(fork_join.ConfigError, match="audioPath"):
+            fork_join.validate_config(config)
+
+    @pytest.mark.parametrize("out", ["out.wav", "out.mp4", "out"])
+    def test_audio_output_must_be_m4a_or_mp3(self, files, out):
+        with pytest.raises(fork_join.ConfigError, match=r"\.m4a"):
+            fork_join.validate_config(self.config(files, out=out))
+
+    def test_unknown_media_type_is_rejected(self, files):
+        with pytest.raises(fork_join.ConfigError, match="mediaType"):
+            fork_join.validate_config(self.config(files, mediaType="hologram"))
+
+    def test_media_type_defaults_to_video(self):
+        assert fork_join.media_type_of({}) == "video"
+        assert fork_join.media_type_of({"mediaType": "audio"}) == "audio"
+
+    # --- склейка
+    def test_audio_is_cut_and_joined_without_extracting_a_track(self, monkeypatch, files, tmp_path):
+        fake = self.audio_fake(monkeypatch, files)
+        logs = []
+        fork_join.process_config(self.config(files, sources=("a.m4a", "b.m4a")), log=logs.append)
+
+        commands = [args for args, _ in fake.calls]
+        assert len(commands) == 3                                       # 2 нарезки и склейка, без «извлечь звук»
+        assert commands[0][-1].endswith("fragment_00_00.m4a") and commands[1][-1].endswith("fragment_01_00.m4a")
+        assert "-vn" in commands[0] and "-c" in commands[0]
+        assert commands[2][:5] == ["-f", "concat", "-safe", "0", "-i"]
+        assert commands[2][-2:] == ["copy", str(tmp_path / "out.m4a")]
+        assert any("Аудио сохранено" in m for m in logs) and not any("Видео сохранено" in m for m in logs)
+
+    def test_mp3_fragments_keep_the_mp3_extension(self, monkeypatch, files, tmp_path):
+        fake = self.audio_fake(monkeypatch, files)
+        config = self.config(files, sources=("c.mp3",), out="out.mp3")
+        fork_join.process_config(config, log=lambda m: None)
+        assert fake.calls[0][0][-1].endswith("fragment_00_00.mp3") and fake.calls[-1][0][-1] == str(tmp_path / "out.mp3")
+
+    # --- проверка совместимости
+    def test_files_with_different_parameters_are_refused_before_cutting(self, monkeypatch, files):
+        fake = self.audio_fake(monkeypatch, files)
+        fake.infos[files["b.m4a"]] = MediaInfo(kind="audio", audio_codec="aac", sample_rate=44100, channels=1)
+        with pytest.raises(fork_join.ConfigError) as info:
+            fork_join.process_config(self.config(files, sources=("a.m4a", "b.m4a")), log=lambda m: None)
+        assert "b.m4a" in str(info.value) and "44100 Гц вместо 48000 Гц" in str(info.value)
+        assert fake.calls == []                                         # ffmpeg не запускался
+
+    def test_m4a_and_mp3_cannot_be_joined(self, monkeypatch, files):
+        fake = self.audio_fake(monkeypatch, files)
+        with pytest.raises(fork_join.ConfigError, match="кодек звука MP3 вместо AAC"):
+            fork_join.process_config(self.config(files, sources=("a.m4a", "c.mp3")), log=lambda m: None)
+        assert fake.calls == []
+
+    def test_video_in_an_audio_config_is_refused(self, monkeypatch, files):
+        fake = self.audio_fake(monkeypatch, files)
+        with pytest.raises(fork_join.ConfigError, match="v.mp4: это видео, а конфигурация для аудио"):
+            fork_join.process_config(self.config(files, sources=("v.mp4",)), log=lambda m: None)
+
+    def test_audio_in_a_video_config_is_refused(self, monkeypatch, files, tmp_path):
+        fake = self.audio_fake(monkeypatch, files)
+        config = {"segments": [{"path": files["a.m4a"], "fragments": [{"start": "00:00:00", "end": "00:00:10"}]}],
+                  "output": {"videoPath": str(tmp_path / "o.mp4"), "audioPath": str(tmp_path / "o.m4a")}}
+        with pytest.raises(fork_join.ConfigError, match="a.m4a: это аудио, а конфигурация для видео"):
+            fork_join.process_config(config, log=lambda m: None)
+
+    def test_output_extension_must_match_the_codec(self, monkeypatch, files):
+        self.audio_fake(monkeypatch, files)
+        with pytest.raises(fork_join.ConfigError, match=r"MP3.*\*\.mp3, а не \*\.m4a"):
+            fork_join.process_config(self.config(files, sources=("c.mp3",), out="out.m4a"), log=lambda m: None)
+        with pytest.raises(fork_join.ConfigError, match=r"AAC.*\*\.m4a, а не \*\.mp3"):
+            fork_join.process_config(self.config(files, sources=("a.m4a",), out="out.mp3"), log=lambda m: None)
+
+    def test_unsupported_audio_codec_is_explained(self, monkeypatch, files):
+        fake = self.audio_fake(monkeypatch, files)
+        fake.infos[files["a.m4a"]] = MediaInfo(kind="audio", audio_codec="opus", sample_rate=48000, channels=1)
+        with pytest.raises(fork_join.ConfigError, match="AAC .* или MP3"):
+            fork_join.process_config(self.config(files), log=lambda m: None)
+
+    def test_video_files_with_different_parameters_are_refused_too(self, monkeypatch, files, tmp_path):
+        fake = FakeFfmpeg(monkeypatch)
+        (tmp_path / "v2.mp4").write_bytes(b"")
+        fake.infos = {str(tmp_path / "v2.mp4"): MediaInfo(**{**VIDEO_INFO.__dict__, "width": 1280, "height": 720})}
+        config = {"segments": [
+            {"path": files["v.mp4"], "fragments": [{"start": "00:00:00", "end": "00:00:10"}]},
+            {"path": str(tmp_path / "v2.mp4"), "fragments": [{"start": "00:00:00", "end": "00:00:10"}]}],
+            "output": {"videoPath": str(tmp_path / "o.mp4"), "audioPath": str(tmp_path / "o.m4a")}}
+        with pytest.raises(fork_join.ConfigError, match="разрешение 1280×720 вместо 1920×1080"):
+            fork_join.process_config(config, log=lambda m: None)
+        assert fake.calls == []
+
+    # --- проверка при добавлении файла в интерфейсе
+    def test_explain_incompatibility(self, monkeypatch, files):
+        fake = self.audio_fake(monkeypatch, files)
+        assert fork_join.explain_incompatibility(files["a.m4a"], files["b.m4a"]) is None
+        assert fork_join.explain_incompatibility(files["a.m4a"], files["c.mp3"]) == "c.mp3: кодек звука MP3 вместо AAC"
+        assert "смешивать видео и аудио нельзя" in fork_join.explain_incompatibility(files["a.m4a"], files["v.mp4"])

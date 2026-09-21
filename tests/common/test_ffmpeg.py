@@ -78,6 +78,36 @@ class TestRunFfmpeg:
             ffmpeg.run_ffmpeg(["-i", "x"])
 
 
+class TestProbeMedia:
+    M4A = '{"streams": [{"codec_type": "audio", "codec_name": "aac", "sample_rate": "48000", "channels": 1, "disposition": {"attached_pic": 0}}]}'
+
+    def test_returns_media_info(self, monkeypatch):
+        calls = fake_run(monkeypatch, stdout=self.M4A)
+        info = ffmpeg.probe_media(Path("lecture.m4a"))
+        assert (info.kind, info.audio_codec, info.sample_rate, info.channels) == ("audio", "aac", 48000, 1)
+        assert calls[0][0] == "ffprobe" and calls[0][-1] == "lecture.m4a" and "json" in calls[0]
+
+    def test_requests_cover_art_flag_so_it_is_not_mistaken_for_video(self, monkeypatch):
+        calls = fake_run(monkeypatch, stdout=self.M4A)
+        ffmpeg.probe_media("a.m4a")
+        assert "stream_disposition=attached_pic" in " ".join(calls[0])
+
+    def test_file_without_streams_is_an_ffmpeg_error(self, monkeypatch):
+        fake_run(monkeypatch, stdout='{"streams": []}')
+        with pytest.raises(ffmpeg.FFmpegError, match="нет ни видео-, ни аудиопотока"):
+            ffmpeg.probe_media("empty.bin")
+
+    def test_garbage_output_is_an_ffmpeg_error(self, monkeypatch):
+        fake_run(monkeypatch, stdout="not json")
+        with pytest.raises(ffmpeg.FFmpegError, match="Не удалось определить тип файла"):
+            ffmpeg.probe_media("a.m4a")
+
+    def test_unreadable_file(self, monkeypatch):
+        fake_run(monkeypatch, returncode=1, stderr="a.m4a: Invalid data found when processing input")
+        with pytest.raises(ffmpeg.FFmpegError, match="Invalid data found"):
+            ffmpeg.probe_media("a.m4a")
+
+
 class TestGetFfmpegMajorVersion:
     @pytest.mark.parametrize("first_line, expected", [
         ("ffmpeg version 9.0.1 Copyright (c) 2000-2026 the FFmpeg developers", 9),
