@@ -52,6 +52,7 @@ from common.timecode import format_duration, hhmmss_to_seconds
 from diarization import diarize_pyannote
 from fork_join import fork_join
 from ui import media_selection
+from ui.batch_dialog import BatchDialog
 from ui.fragments_player import FragmentsPlayerDialog
 from speech_to_text_gigaam import transcribe
 from speech_to_text_gigaam.environment import (
@@ -130,6 +131,7 @@ class PipelineUI(QWidget):
         # MediaInfo первого файла: тип (видео/аудио) и формат всего списка; None, пока список пуст
         self.reference_info = None
         self.worker_thread = None
+        self.batch_dialog = None  # создаётся лениво, переиспользуется между открытиями
 
         self.log_signal.connect(self._log)
         self.done_signal.connect(self._on_done)
@@ -160,6 +162,12 @@ class PipelineUI(QWidget):
         preview_action = QAction("Предпросмотр JSON", self)
         preview_action.triggered.connect(self._preview_json)
         file_menu.addAction(preview_action)
+
+        file_menu.addSeparator()
+
+        batch_action = QAction("Пакетная обработка…", self)
+        batch_action.triggered.connect(self._open_batch_dialog)
+        file_menu.addAction(batch_action)
 
         file_menu.addSeparator()
 
@@ -292,6 +300,15 @@ class PipelineUI(QWidget):
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
         layout.addWidget(self.log_text, stretch=1)
+
+    def _open_batch_dialog(self) -> None:
+        """Диалог «Пакетная обработка» — независим от текущей конфигурации главного окна,
+        держим один и тот же экземпляр, чтобы повторное открытие не теряло список/прогресс."""
+        if self.batch_dialog is None:
+            self.batch_dialog = BatchDialog(self)
+        self.batch_dialog.show()
+        self.batch_dialog.raise_()
+        self.batch_dialog.activateWindow()
 
     def _on_speech2text_toggle(self, checked: bool):
         self.transcript_label.setEnabled(checked)
