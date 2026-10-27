@@ -90,6 +90,16 @@ class FakeFfmpeg:
         monkeypatch.setattr(fork_join, "probe_media", lambda path: self.infos.get(str(path), self.default_info))
         self.durations = {}
         monkeypatch.setattr(fork_join, "get_media_duration", lambda path: self.durations.get(str(path), 100000.0))
+        self.progress_calls = []       # (args, action) вызовов run_ffmpeg_with_progress
+        self.progress_script = []      # секунды, которые «ffmpeg» сообщит в on_progress
+        self.encoders = {"libx264"}
+        monkeypatch.setattr(fork_join, "run_ffmpeg_with_progress", self._run_with_progress)
+        monkeypatch.setattr(fork_join, "has_encoder", lambda name: name in self.encoders)
+
+    def _run_with_progress(self, args, action, on_progress):
+        self.progress_calls.append((args, action))
+        for seconds in self.progress_script:
+            on_progress(seconds)
 
 
 class TestCommands:
@@ -320,4 +330,171 @@ class TestCutToEndOfFile:
         cuts = [args for args, _ in fake.calls[:2]]
         assert "-t" not in cuts[0]                      # a: до конца файла
         assert cuts[1][cuts[1].index("-t") + 1] == "5176.0"   # b: обычный конец (60 с до конца)
+
+
+class TestRecompressVideo:
+    """Необязательное пережатие видео: x264 veryfast CRF 23 вместо копирования при склейке."""
+
+    def config(self, tmp_path, **extra):
+        video = tmp_path / "in.mp4"
+        video.write_bytes(b"")
+        return {
+            "segments": [{"path": str(video), "fragments": [
+                {"start": "00:00:00", "end": "00:00:10"}, {"start": "00:01:00", "end": "00:01:30"}]}],
+            "output": {"videoPath": str(tmp_path / "out.mp4"), "audioPath": str(tmp_path / "out.m4a")},
+            **extra,
+        }
+
+    # --- конфигурация
+    def test_flag_is_optional_and_false_by_default(self, tmp_path):
+        fork_join.validate_config(self.config(tmp_path))
+        fork_join.validate_config(self.config(tmp_path, recompressVideo=False))
+        fork_join.validate_config(self.config(tmp_path, recompressVideo=True))
+
+    @pytest.mark.parametrize("value", ["true", 1, None, "yes"])
+    def test_flag_must_be_a_boolean(self, tmp_path, value):
+        with pytest.raises(fork_join.ConfigError, match="recompressVideo"):
+            fork_join.validate_config(self.config(tmp_path, recompressVideo=value))
+
+    def test_flag_makes_no_sense_for_audio(self, tmp_path):
+        audio = tmp_path / "a.m4a"
+        audio.write_bytes(b"")
+        config = {"mediaType": "audio", "recompressVideo": True,
+                  "segments": [{"path": str(audio), "fragments": [{"start": "00:00:00", "end": "00:00:10"}]}],
+                  "output": {"audioPath": str(tmp_path / "out.m4a")}}
+        with pytest.raises(fork_join.ConfigError, match="только для видео"):
+            fork_join.validate_config(config)
+
+    def test_false_flag_is_fine_for_audio(self, tmp_path):
+        audio = tmp_path / "a.m4a"
+        audio.write_bytes(b"")
+        config = {"mediaType": "audio", "recompressVideo": False,
+                  "segments": [{"path": str(audio), "fragments": [{"start": "00:00:00", "end": "00:00:10"}]}],
+                  "output": {"audioPath": str(tmp_path / "out.m4a")}}
+        fork_join.validate_config(config)
+
+    # --- команды
+    def test_cuts_stay_stream_copies_and_the_join_reencodes_video_only(self, monkeypatch, tmp_path):
+        fake = FakeFfmpeg(monkeypatch)
+        fork_join.process_config(self.config(tmp_path, recompressVideo=True), log=lambda m: None)
+
+        cuts = [args for args, _ in fake.calls if args[0] == "-ss"]
+        assert len(cuts) == 2 and all("copy" in c and "libx264" not in c for c in cuts)
+
+        assert len(fake.progress_calls) == 1
+        args, action = fake.progress_calls[0]
+        assert args[:5] == ["-f", "concat", "-safe", "0", "-i"] and args[5].endswith("concat_list.txt")
+        assert args[6:] == ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+                            "-c:a", "copy", str(tmp_path / "out.mp4")]
+        assert action == "Не удалось пережать видео"
+
+    def test_audio_is_still_extracted_from_the_result_without_recoding(self, monkeypatch, tmp_path):
+        fake = FakeFfmpeg(monkeypatch)
+        fork_join.process_config(self.config(tmp_path, recompressVideo=True), log=lambda m: None)
+        assert fake.calls[-1][0] == ["-i", str(tmp_path / "out.mp4"), "-vn", "-acodec", "copy", str(tmp_path / "out.m4a")]
+
+    def test_no_plain_concat_copy_command_when_recompressing(self, monkeypatch, tmp_path):
+        fake = FakeFfmpeg(monkeypatch)
+        fork_join.process_config(self.config(tmp_path, recompressVideo=True), log=lambda m: None)
+        assert not any(args[:2] == ["-f", "concat"] for args, _ in fake.calls)
+
+    def test_without_the_flag_nothing_changes(self, monkeypatch, tmp_path):
+        fake = FakeFfmpeg(monkeypatch)
+        fork_join.process_config(self.config(tmp_path), log=lambda m: None)
+        assert fake.progress_calls == []
+        concat = [args for args, _ in fake.calls if args[:2] == ["-f", "concat"]]
+        assert len(concat) == 1 and concat[0][-2:] == ["copy", str(tmp_path / "out.mp4")]
+
+    # --- fail fast
+    def test_missing_encoder_stops_before_any_work(self, monkeypatch, tmp_path):
+        fake = FakeFfmpeg(monkeypatch)
+        fake.encoders = set()
+        with pytest.raises(FFmpegError) as info:
+            fork_join.process_config(self.config(tmp_path, recompressVideo=True), log=lambda m: None)
+        assert "libx264" in str(info.value) and "Отключите «Пережать видео»" in str(info.value)
+        assert fake.calls == [] and fake.progress_calls == []
+
+    def test_encoder_is_not_checked_when_not_recompressing(self, monkeypatch, tmp_path):
+        fake = FakeFfmpeg(monkeypatch)
+        fake.encoders = set()
+        fork_join.process_config(self.config(tmp_path), log=lambda m: None)   # не бросает
+
+    # --- журнал
+    def test_progress_is_logged_every_ten_percent(self, monkeypatch, tmp_path):
+        fake = FakeFfmpeg(monkeypatch)
+        fake.durations = {}  # каждый фрагмент по умолчанию 100000 с, всего 200000 с
+        fake.progress_script = [0, 5000, 20000, 20001, 100000, 200000]
+        logs = []
+        fork_join.process_config(self.config(tmp_path, recompressVideo=True), log=logs.append)
+        assert [m for m in logs if m.startswith("Пережатие видео")] == [
+            "Пережатие видео: 10%", "Пережатие видео: 50%", "Пережатие видео: 100%"]
+
+    def test_log_announces_the_recompression(self, monkeypatch, tmp_path):
+        FakeFfmpeg(monkeypatch)
+        logs = []
+        fork_join.process_config(self.config(tmp_path, recompressVideo=True), log=logs.append)
+        assert any("пережимаю видео (x264 veryfast, CRF 23)" in m for m in logs)
+
+
+class TestProgressLogger:
+    def test_logs_only_when_a_new_step_is_crossed(self):
+        logs = []
+        callback = fork_join.progress_logger(100.0, logs.append)
+        for seconds in (0, 3, 9.9, 10, 12, 19.9, 20, 55, 99, 100):
+            callback(seconds)
+        assert logs == ["Пережатие видео: 10%", "Пережатие видео: 20%", "Пережатие видео: 50%",
+                        "Пережатие видео: 90%", "Пережатие видео: 100%"]
+
+    def test_never_exceeds_one_hundred_and_never_repeats(self):
+        logs = []
+        callback = fork_join.progress_logger(10.0, logs.append)
+        for seconds in (10, 11, 50, 10):          # ffmpeg может слегка превысить расчётную длительность
+            callback(seconds)
+        assert logs == ["Пережатие видео: 100%"]
+
+    def test_zero_total_duration_is_harmless(self):
+        logs = []
+        fork_join.progress_logger(0.0, logs.append)(5.0)
+        assert logs == []
+
+    def test_custom_step(self):
+        logs = []
+        callback = fork_join.progress_logger(100.0, logs.append, step_percent=25)
+        for seconds in (10, 30, 60, 80, 100):
+            callback(seconds)
+        assert logs == ["Пережатие видео: 25%", "Пережатие видео: 50%", "Пережатие видео: 75%", "Пережатие видео: 100%"]
+
+
+class TestSizeReport:
+    def test_logged_when_the_files_exist(self, monkeypatch, tmp_path):
+        FakeFfmpeg(monkeypatch)
+        # размеры подменены: два фрагмента 8 МБ в сумме -> результат 2 МБ
+        monkeypatch.setattr(fork_join, "_size_mb", lambda paths: 8.0 if len(list(paths)) > 1 else 2.0)
+        video = tmp_path / "in.mp4"
+        video.write_bytes(b"")
+        config = {"segments": [{"path": str(video), "fragments": [
+            {"start": "00:00:00", "end": "00:00:10"}, {"start": "00:01:00", "end": "00:01:30"}]}],
+            "output": {"videoPath": str(tmp_path / "out.mp4"), "audioPath": str(tmp_path / "out.m4a")},
+            "recompressVideo": True}
+        logs = []
+        fork_join.process_config(config, log=logs.append)
+        assert "Размер видео: 8 МБ → 2 МБ (25% от исходного)" in logs
+
+    def test_skipped_silently_when_sizes_are_unknown(self, monkeypatch, tmp_path):
+        FakeFfmpeg(monkeypatch)       # файлы не созданы -> os.path.getsize бросает OSError
+        video = tmp_path / "in.mp4"
+        video.write_bytes(b"")
+        config = {"segments": [{"path": str(video), "fragments": [{"start": "00:00:00", "end": "00:00:10"}]}],
+                  "output": {"videoPath": str(tmp_path / "out.mp4"), "audioPath": str(tmp_path / "out.m4a")},
+                  "recompressVideo": True}
+        logs = []
+        fork_join.process_config(config, log=logs.append)
+        assert not any(m.startswith("Размер видео") for m in logs)
+
+    def test_size_helper(self, tmp_path):
+        a, b = tmp_path / "a", tmp_path / "b"
+        a.write_bytes(b"x" * 1048576)
+        b.write_bytes(b"x" * 2097152)
+        assert fork_join._size_mb([a, b]) == pytest.approx(3.0)
+        assert fork_join._size_mb([tmp_path / "нет"]) is None
 

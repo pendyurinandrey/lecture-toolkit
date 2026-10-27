@@ -6,6 +6,10 @@ MP4 и дополнительно сохраняет звуковую дорож
 Для записей без видео (mediaType = "audio") то же самое делается со звуком:
 фрагменты M4A или MP3 нарезаются и склеиваются в один файл того же формата.
 
+Необязательное пережатие видео ("recompressVideo": true) уменьшает файлы, записанные с
+x264 "ultrafast" (обычно в 5-8 раз): после нарезки видео не копируется, а один раз
+перекодируется при склейке, звук по-прежнему копируется как есть.
+
 Перед склейкой проверяется, что параметры всех файлов одинаковы (см.
 common/media_info.py): иначе ffmpeg склеил бы их молча и испортил результат.
 
@@ -19,8 +23,17 @@ ConfigError/FFmpegError, что позволяет UI показать ошиб�
 import os
 import tempfile
 from pathlib import Path
+from typing import Optional
 
-from common.ffmpeg import check_ffmpeg, get_media_duration, probe_media, run_ffmpeg
+from common.ffmpeg import (
+    FFmpegError,
+    check_ffmpeg,
+    get_media_duration,
+    has_encoder,
+    probe_media,
+    run_ffmpeg,
+    run_ffmpeg_with_progress,
+)
 from common.media_info import AUDIO_EXTENSIONS, audio_extension, incompatibilities
 from common.timecode import hhmmss_to_seconds
 
@@ -29,6 +42,12 @@ MEDIA_TYPES = ("video", "audio")
 # 5296.36 с записывается как 01:28:16 и отрезал бы хвост. Конец, отстоящий от конца файла не
 # больше чем на это число секунд (меньше точности «ЧЧ:ММ:СС»), означает «до конца файла».
 END_OF_FILE_TOLERANCE = 0.5
+# Пережатие видео ("Компактно"): x264 veryfast, CRF 23. На записях OBS с "ultrafast" размер
+# обычно в 5-8 раз меньше при почти том же качестве (SSIM ~0.99); yuv420p — чтобы результат
+# играл везде. Одна настройка осознанно: preset medium даёт лишь на 2-3 п.п. меньше, но вдвое медленнее.
+RECOMPRESS_ENCODER = "libx264"
+RECOMPRESS_VIDEO_ARGS = ["-c:v", RECOMPRESS_ENCODER, "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p"]
+PROGRESS_STEP_PERCENT = 10
 
 
 class ConfigError(ValueError):
@@ -45,6 +64,12 @@ def validate_config(config: dict) -> None:
     media_type = media_type_of(config)
     if media_type not in MEDIA_TYPES:
         raise ConfigError(f'Поле "mediaType" должно быть "video" или "audio", а не {media_type!r}')
+
+    recompress = config.get("recompressVideo", False)
+    if not isinstance(recompress, bool):
+        raise ConfigError('Поле "recompressVideo" должно быть true или false')
+    if recompress and media_type == "audio":
+        raise ConfigError('"recompressVideo" имеет смысл только для видео (у mediaType "audio" видео нет)')
 
     segments = config.get("segments")
     if not isinstance(segments, list) or not (1 <= len(segments) <= 20):
@@ -156,9 +181,35 @@ def escape_concat_path(path: str) -> str:
     return path.replace("'", "'\\''")
 
 
+def progress_logger(total_seconds: float, log, step_percent: int = PROGRESS_STEP_PERCENT):
+    """Колбэк для run_ffmpeg_with_progress: пишет в log "Пережатие видео: N%" при переходе через
+    каждые step_percent процентов (а не на каждое обновление ffmpeg — их десятки в секунду)."""
+    last = [0]
+
+    def on_progress(seconds: float) -> None:
+        if total_seconds <= 0:
+            return
+        percent = min(100, int(100 * seconds / total_seconds))
+        bucket = percent // step_percent * step_percent
+        if bucket > last[0]:
+            last[0] = bucket
+            log(f"Пережатие видео: {bucket}%")
+
+    return on_progress
+
+
+def _size_mb(paths) -> Optional[float]:
+    try:
+        return sum(os.path.getsize(p) for p in paths) / 1048576
+    except OSError:
+        return None
+
+
 def join_fragments(segments: list, tmp_dir: str, output_path: str, media_type: str = "video",
-                   log=lambda msg: None) -> None:
-    """Нарезает фрагменты всех сегментов и склеивает их в output_path (видео или аудио)."""
+                   log=lambda msg: None, recompress: bool = False) -> None:
+    """Нарезает фрагменты всех сегментов и склеивает их в output_path (видео или аудио).
+    recompress (только видео): вместо копирования видеопотока при склейке перекодирует его
+    (RECOMPRESS_VIDEO_ARGS), звук копируется как есть."""
     fragment_paths = []
     for i, segment in enumerate(segments):
         source_path = segment["path"]
@@ -178,6 +229,17 @@ def join_fragments(segments: list, tmp_dir: str, output_path: str, media_type: s
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     target = "итоговое видео" if media_type == "video" else "итоговый аудиофайл"
+    if recompress and media_type == "video":
+        log("Склеиваю фрагменты и пережимаю видео (x264 veryfast, CRF 23)...")
+        total = sum(get_media_duration(p) for p in fragment_paths)
+        run_ffmpeg_with_progress(
+            ["-f", "concat", "-safe", "0", "-i", concat_list_path, *RECOMPRESS_VIDEO_ARGS, "-c:a", "copy", output_path],
+            "Не удалось пережать видео", progress_logger(total, log),
+        )
+        before, after = _size_mb(fragment_paths), _size_mb([output_path])
+        if before and after:
+            log(f"Размер видео: {before:.0f} МБ → {after:.0f} МБ ({after / before * 100:.0f}% от исходного)")
+        return
     log(f"Склеиваю фрагменты в {target}...")
     run_ffmpeg(
         [
@@ -220,6 +282,12 @@ def process_config(config: dict, log=print) -> None:
 
     media_type = media_type_of(config)
     audio_path = config["output"]["audioPath"]
+    recompress = config.get("recompressVideo", False)
+    if recompress and not has_encoder(RECOMPRESS_ENCODER):
+        raise FFmpegError(
+            f"В установленной сборке ffmpeg нет кодировщика {RECOMPRESS_ENCODER}, пережатие видео недоступно. "
+            "Отключите «Пережать видео» или установите ffmpeg с поддержкой x264 (например, brew install ffmpeg)."
+        )
 
     with tempfile.TemporaryDirectory(prefix="fork_join_") as tmp_dir:
         log("Нарезаю и склеиваю фрагменты...")
@@ -229,7 +297,7 @@ def process_config(config: dict, log=print) -> None:
             return
 
         video_path = config["output"]["videoPath"]
-        join_fragments(config["segments"], tmp_dir, video_path, "video", log=log)
+        join_fragments(config["segments"], tmp_dir, video_path, "video", log=log, recompress=recompress)
         log(f"Видео сохранено: {video_path}")
 
         log("Извлекаю звуковую дорожку...")

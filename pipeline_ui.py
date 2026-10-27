@@ -241,6 +241,14 @@ class PipelineUI(QWidget):
         audio_browse_btn.clicked.connect(self._browse_audio_output)
         output_layout.addWidget(audio_browse_btn, 1, 2)
 
+        self.recompress_check = QCheckBox("Пережать видео (компактнее, обработка дольше)")
+        self.recompress_check.setToolTip(
+            "Для записей, сжатых x264 «ultrafast» (огромные файлы): видео перекодируется один раз при склейке\n"
+            "(x264 veryfast, CRF 23) — размер обычно в 5–8 раз меньше при почти том же качестве.\n"
+            "Звук не затрагивается. Время: порядка 1 минуты на 25 минут записи 720p, для 1080p примерно вдвое дольше."
+        )
+        output_layout.addWidget(self.recompress_check, 2, 0, 1, 3)
+
         layout.addWidget(output_group)
 
         # -------------------------------------------------- speech-to-text
@@ -361,7 +369,7 @@ class PipelineUI(QWidget):
             self.reference_info = None
         self.source_label.setText(media_selection.source_caption(self.reference_info))
         visible = media_selection.video_output_visible(self.reference_info)
-        for widget in (self.video_label, self.video_path_edit, self.video_browse_btn):
+        for widget in (self.video_label, self.video_path_edit, self.video_browse_btn, self.recompress_check):
             widget.setVisible(visible)
         self.audio_label.setText(media_selection.audio_output_label(self.reference_info))
 
@@ -512,6 +520,7 @@ class PipelineUI(QWidget):
         self.segments = []
         self.video_path_edit.setText("")
         self.audio_path_edit.setText("")
+        self.recompress_check.setChecked(False)
         self._refresh_tree()
 
     # -------------------------------------------------------------- output
@@ -563,13 +572,16 @@ class PipelineUI(QWidget):
                 "segments": self.segments,
                 "output": {"audioPath": self.audio_path_edit.text().strip()},
             }
-        return {
+        config = {
             "segments": self.segments,
             "output": {
                 "videoPath": self.video_path_edit.text().strip(),
                 "audioPath": self.audio_path_edit.text().strip(),
             },
         }
+        if self.recompress_check.isChecked():
+            config["recompressVideo"] = True  # без галочки ключа нет: конфигурация прежняя
+        return config
 
     def _validated_config(self):
         config = self._build_config()

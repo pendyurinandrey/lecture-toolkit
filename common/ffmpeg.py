@@ -12,7 +12,9 @@ import json
 import re
 import shutil
 import subprocess
+from collections import deque
 from pathlib import Path
+from typing import Callable, Optional
 
 from common.media_info import MediaInfo, parse_probe
 
@@ -22,6 +24,12 @@ _ERROR_TAIL_LINES = 15
 # «ffmpeg version 9.0.1», «ffmpeg version n7.1», «ffmpeg version 4.4.2-0ubuntu0.22.04.1».
 # Точка после мажорной версии обязательна: git-сборки («N-118000-g…», «2024-05-06-git-…») версию не несут.
 _VERSION_RE = re.compile(r"ffmpeg version n?(\d+)\.\d")
+# Ключи, которые ffmpeg печатает в блоках `-progress`; всё остальное в выводе — сообщения об ошибках.
+_PROGRESS_LINE_RE = re.compile(
+    r"^(frame|fps|stream_\d+_\d+_q|bitrate|total_size|out_time_us|out_time_ms|out_time|"
+    r"dup_frames|drop_frames|speed|progress)="
+)
+_OUT_TIME_RE = re.compile(r"^out_time_(?:us|ms)=(\d+)\s*$")
 
 
 class FFmpegError(RuntimeError):
@@ -60,6 +68,44 @@ def run_ffmpeg(args: list, action: str = "Не удалось выполнить
     """Запускает ffmpeg с переданными аргументами (перезаписывает выходной файл,
     показывает только ошибки). action — что делали: попадёт в текст ошибки."""
     _run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *args], action)
+
+
+def has_encoder(name: str) -> bool:
+    """Есть ли в установленной сборке ffmpeg кодировщик name (например, "libx264").
+    Бросает FFmpegError, если сам ffmpeg не найден или не отвечает."""
+    result = _run(["ffmpeg", "-hide_banner", "-encoders"], "Не удалось получить список кодировщиков ffmpeg", timeout=30)
+    # строка списка: " V....D libx264              libx264 H.264 / AVC ..."
+    return any(line.split()[1:2] == [name] for line in result.stdout.splitlines() if line.startswith(" "))
+
+
+def parse_progress_line(line: str) -> Optional[float]:
+    """Секунды обработанного видео из строки `out_time_us=...` (или `out_time_ms=...`, у ffmpeg это
+    тоже микросекунды) блока `-progress`; None для любой другой строки (и для `N/A` в начале)."""
+    match = _OUT_TIME_RE.match(line)
+    return int(match.group(1)) / 1_000_000 if match else None
+
+
+def run_ffmpeg_with_progress(args: list, action: str, on_progress: Callable[[float], None]) -> None:
+    """Как run_ffmpeg, но во время работы вызывает on_progress(секунд обработано) — для долгих
+    команд (перекодирование видео), чтобы окно не выглядело зависшим. Бросает FFmpegError."""
+    command = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1", *args]
+    try:
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
+        )
+    except FileNotFoundError as e:
+        raise _not_found("ffmpeg") from e
+
+    tail = deque(maxlen=_ERROR_TAIL_LINES)
+    for line in process.stdout:
+        seconds = parse_progress_line(line)
+        if seconds is not None:
+            on_progress(seconds)
+        elif line.strip() and not _PROGRESS_LINE_RE.match(line):
+            tail.append(line.rstrip())
+    if process.wait() != 0:
+        raise FFmpegError(f"{action}: ffmpeg завершился с ошибкой:\n" + "\n".join(tail))
 
 
 def get_ffmpeg_major_version() -> int:

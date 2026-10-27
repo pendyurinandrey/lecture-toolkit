@@ -78,6 +78,124 @@ class TestRunFfmpeg:
             ffmpeg.run_ffmpeg(["-i", "x"])
 
 
+ENCODERS = (
+    " Encoders:\n V..... = Video\n ------\n"
+    " V....D libx264              libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (codec h264)\n"
+    " V....D libx264rgb           libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 RGB (codec h264)\n"
+    " V....D h264_videotoolbox    VideoToolbox H.264 Encoder (codec h264)\n"
+    " A....D aac                  AAC (Advanced Audio Coding)\n"
+)
+
+
+class TestHasEncoder:
+    def test_found(self, monkeypatch):
+        calls = fake_run(monkeypatch, stdout=ENCODERS)
+        assert ffmpeg.has_encoder("libx264") is True
+        assert calls[0][:2] == ["ffmpeg", "-hide_banner"] and "-encoders" in calls[0]
+
+    def test_exact_name_match_only(self, monkeypatch):
+        fake_run(monkeypatch, stdout=ENCODERS)
+        assert ffmpeg.has_encoder("x264") is False          # часть имени — не кодировщик
+        assert ffmpeg.has_encoder("libx265") is False
+        assert ffmpeg.has_encoder("libx264rgb") is True     # а полное имя соседа — да
+
+    def test_description_text_is_not_matched(self, monkeypatch):
+        fake_run(monkeypatch, stdout=ENCODERS)
+        assert ffmpeg.has_encoder("H.264") is False
+
+    def test_missing_ffmpeg(self, monkeypatch):
+        fake_run(monkeypatch, raises=FileNotFoundError())
+        with pytest.raises(ffmpeg.FFmpegError, match="Не найден ffmpeg"):
+            ffmpeg.has_encoder("libx264")
+
+
+class TestParseProgressLine:
+    @pytest.mark.parametrize("line, expected", [
+        ("out_time_us=12345678\n", 12.345678),
+        ("out_time_ms=2500000\n", 2.5),          # у ffmpeg «ms» — тоже микросекунды
+        ("out_time_us=0\n", 0.0),
+        ("out_time_us=N/A\n", None),             # в самом начале работы
+        ("out_time=00:00:12.345678\n", None),    # текстовая форма не используется
+        ("frame=100\n", None),
+        ("progress=continue\n", None),
+        ("Error while decoding\n", None),
+        ("", None),
+    ])
+    def test_parses(self, line, expected):
+        result = ffmpeg.parse_progress_line(line)
+        assert result == pytest.approx(expected) if expected is not None else result is None
+
+
+class FakePopen:
+    """Подмена subprocess.Popen: stdout — заданные строки, wait() — код возврата."""
+
+    commands = []
+
+    def __init__(self, command, lines, returncode, **kwargs):
+        FakePopen.commands.append((command, kwargs))
+        self.stdout = iter(lines)
+        self._returncode = returncode
+
+    def wait(self):
+        return self._returncode
+
+
+def fake_popen(monkeypatch, lines=(), returncode=0, raises=None):
+    FakePopen.commands = []
+
+    def factory(command, **kwargs):
+        if raises:
+            raise raises
+        return FakePopen(command, list(lines), returncode, **kwargs)
+
+    monkeypatch.setattr(ffmpeg.subprocess, "Popen", factory)
+
+
+class TestRunFfmpegWithProgress:
+    BLOCK = ["frame=10\n", "out_time_us=1000000\n", "progress=continue\n",
+             "frame=20\n", "out_time_us=N/A\n", "out_time_us=2500000\n", "progress=end\n"]
+
+    def test_reports_progress_in_seconds(self, monkeypatch):
+        fake_popen(monkeypatch, lines=self.BLOCK)
+        seen = []
+        ffmpeg.run_ffmpeg_with_progress(["-i", "a", "b"], "действие", seen.append)
+        assert seen == [pytest.approx(1.0), pytest.approx(2.5)]
+
+    def test_command_has_progress_flags_and_the_given_arguments(self, monkeypatch):
+        fake_popen(monkeypatch, lines=[])
+        ffmpeg.run_ffmpeg_with_progress(["-i", "in.mp4", "out.mp4"], "действие", lambda s: None)
+        command, kwargs = FakePopen.commands[0]
+        assert command == ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostats",
+                           "-progress", "pipe:1", "-i", "in.mp4", "out.mp4"]
+        assert kwargs["stderr"] == ffmpeg.subprocess.STDOUT          # ошибки приходят в тот же поток
+
+    def test_failure_reports_action_and_error_lines_without_progress_noise(self, monkeypatch):
+        fake_popen(monkeypatch, returncode=1,
+                   lines=["frame=1\n", "out_time_us=1000\n", "Unknown encoder 'libx999'\n", "progress=end\n",
+                          "Conversion failed!\n"])
+        with pytest.raises(ffmpeg.FFmpegError) as info:
+            ffmpeg.run_ffmpeg_with_progress(["-i", "a", "b"], "Не удалось пережать видео", lambda s: None)
+        message = str(info.value)
+        assert "Не удалось пережать видео" in message and "Unknown encoder 'libx999'" in message
+        assert "Conversion failed!" in message
+        assert "frame=" not in message and "out_time" not in message and "progress=" not in message
+
+    def test_only_the_last_error_lines_are_kept(self, monkeypatch):
+        fake_popen(monkeypatch, returncode=1, lines=[f"ошибка {i}\n" for i in range(40)])
+        with pytest.raises(ffmpeg.FFmpegError) as info:
+            ffmpeg.run_ffmpeg_with_progress(["x"], "действие", lambda s: None)
+        assert "ошибка 39" in str(info.value) and "ошибка 25" in str(info.value) and "ошибка 24" not in str(info.value)
+
+    def test_missing_ffmpeg(self, monkeypatch):
+        fake_popen(monkeypatch, raises=FileNotFoundError())
+        with pytest.raises(ffmpeg.FFmpegError, match="Не найден ffmpeg в PATH"):
+            ffmpeg.run_ffmpeg_with_progress(["x"], "действие", lambda s: None)
+
+    def test_success_with_noise_only_does_not_raise(self, monkeypatch):
+        fake_popen(monkeypatch, lines=["frame=1\n", "\n", "progress=end\n"])
+        ffmpeg.run_ffmpeg_with_progress(["x"], "действие", lambda s: None)
+
+
 class TestProbeMedia:
     M4A = '{"streams": [{"codec_type": "audio", "codec_name": "aac", "sample_rate": "48000", "channels": 1, "disposition": {"attached_pic": 0}}]}'
 
