@@ -137,8 +137,9 @@ def get_media_duration(path) -> float:
 def probe_media(path) -> MediaInfo:
     """Тип файла (видео/аудио) и параметры потоков — по содержимому, через ffprobe."""
     result = _run(
-        ["ffprobe", "-v", "error",
-         "-show_entries", "stream=codec_type,codec_name,sample_rate,channels,width,height,pix_fmt,r_frame_rate"
+        # extradata_hash (с -show_data_hash) — отпечаток параметров кодека, см. media_info.incompatibilities()
+        ["ffprobe", "-v", "error", "-show_data_hash", "MD5",
+         "-show_entries", "stream=codec_type,codec_name,sample_rate,channels,width,height,pix_fmt,extradata_hash"
                           ":stream_disposition=attached_pic",
          "-of", "json", str(path)],
         f"Не удалось прочитать параметры {path}",

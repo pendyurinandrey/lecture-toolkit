@@ -10,11 +10,16 @@
 стерео + 44.1 кГц моно дали итог на 15 секунд короче суммы, код возврата 0), поэтому
 несовместимость нужно ловить заранее: см. incompatibilities().
 
+Частоту кадров НЕ сравниваем: в MP4 у каждого кадра своя метка времени, и при склейке без
+перекодирования она сохраняется (проверено на записях экрана с переменной частотой ~24.3 к/с,
+у которых ffprobe оценивает r_frame_rate по-разному: 97/4 и 73/3, — склейка корректна).
+Зато сравниваем параметры кодека (extradata: SPS/PPS у H.264/HEVC): в MP4 хранится один набор
+на весь поток, и при разных наборах картинка после места склейки молча портится.
+
 Модуль чистый — ничего не запускает; данные ffprobe приходят из ffmpeg.probe_media().
 """
 
 from dataclasses import dataclass
-from fractions import Fraction
 from typing import Optional
 
 VIDEO_EXTENSIONS = (".mp4",)
@@ -36,7 +41,7 @@ class MediaInfo:
     width: Optional[int] = None
     height: Optional[int] = None
     pix_fmt: Optional[str] = None
-    frame_rate: Optional[str] = None   # как в ffprobe: "30/1", "30000/1001"
+    video_extradata: Optional[str] = None  # хеш параметров кодека видео, как в ffprobe: "MD5:2c5b…"
 
 
 def _to_int(value) -> Optional[int]:
@@ -64,7 +69,7 @@ def parse_probe(data: dict) -> MediaInfo:
     if video:
         fields.update(video_codec=video[0].get("codec_name"),
                       width=_to_int(video[0].get("width")), height=_to_int(video[0].get("height")),
-                      pix_fmt=video[0].get("pix_fmt"), frame_rate=video[0].get("r_frame_rate"))
+                      pix_fmt=video[0].get("pix_fmt"), video_extradata=video[0].get("extradata_hash"))
     return MediaInfo(**fields)
 
 
@@ -75,13 +80,6 @@ def audio_extension(info: MediaInfo) -> Optional[str]:
 
 def _codec(name: Optional[str]) -> str:
     return name.upper() if name else "нет"
-
-
-def _fps(value: Optional[str]) -> str:
-    try:
-        return f"{float(Fraction(value)):.2f}".rstrip("0").rstrip(".")
-    except (TypeError, ValueError, ZeroDivisionError):
-        return str(value)
 
 
 def incompatibilities(reference: MediaInfo, other: MediaInfo) -> list:
@@ -105,12 +103,16 @@ def incompatibilities(reference: MediaInfo, other: MediaInfo) -> list:
             problems.append(f"каналов звука: {other.channels} вместо {reference.channels}")
 
     if reference.kind == "video":
+        video_problems = len(problems)
         if reference.video_codec != other.video_codec:
             problems.append(f"кодек видео {_codec(other.video_codec)} вместо {_codec(reference.video_codec)}")
         if (reference.width, reference.height) != (other.width, other.height):
             problems.append(f"разрешение {other.width}×{other.height} вместо {reference.width}×{reference.height}")
         if reference.pix_fmt != other.pix_fmt:
             problems.append(f"формат пикселей {other.pix_fmt} вместо {reference.pix_fmt}")
-        if reference.frame_rate != other.frame_rate:
-            problems.append(f"частота кадров {_fps(other.frame_rate)} вместо {_fps(reference.frame_rate)}")
+        # Хеш сравниваем, только когда он известен у обоих: без него проверять нечего.
+        # Если уже отличаются кодек, разрешение или формат пикселей, параметры кодека заведомо другие — не дублируем.
+        if (reference.video_extradata and other.video_extradata and len(problems) == video_problems
+                and reference.video_extradata != other.video_extradata):
+            problems.append("параметры кодека видео отличаются (запись сделана с другими настройками)")
     return problems

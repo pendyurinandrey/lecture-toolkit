@@ -210,6 +210,12 @@ class TestProbeMedia:
         ffmpeg.probe_media("a.m4a")
         assert "stream_disposition=attached_pic" in " ".join(calls[0])
 
+    def test_requests_codec_parameters_hash(self, monkeypatch):
+        calls = fake_run(monkeypatch, stdout=self.M4A)
+        ffmpeg.probe_media("a.mp4")
+        assert "extradata_hash" in " ".join(calls[0])
+        assert calls[0][calls[0].index("-show_data_hash") + 1] == "MD5"
+
     def test_file_without_streams_is_an_ffmpeg_error(self, monkeypatch):
         fake_run(monkeypatch, stdout='{"streams": []}')
         with pytest.raises(ffmpeg.FFmpegError, match="нет ни видео-, ни аудиопотока"):

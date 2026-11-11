@@ -18,7 +18,7 @@ from ui.media_selection import (
 M4A = MediaInfo(kind="audio", audio_codec="aac", sample_rate=48000, channels=1)
 MP3 = MediaInfo(kind="audio", audio_codec="mp3", sample_rate=44100, channels=2)
 VIDEO = MediaInfo(kind="video", audio_codec="aac", sample_rate=48000, channels=2,
-                  video_codec="h264", width=1920, height=1080, pix_fmt="yuv420p", frame_rate="30/1")
+                  video_codec="h264", width=1920, height=1080, pix_fmt="yuv420p", video_extradata="MD5:aaa")
 
 
 class TestOpenFileFilter:
